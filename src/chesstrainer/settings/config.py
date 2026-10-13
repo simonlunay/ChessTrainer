@@ -25,7 +25,8 @@ Orientation = Literal["auto", "white", "black"]
 class Settings:
     #: mss monitor index: 1 = primary, 2.. = others, 0 = all monitors combined.
     monitor: int = 1
-    capture_fps: float = 5.0
+    #: 10 fps keeps move-to-arrow latency well under 500 ms (2 stable frames + engine).
+    capture_fps: float = 10.0
     #: Exclude the overlay window from screen capture (Windows 10 2004+). Turn off to record GIFs;
     #: ChessTrainer then sees its own arrows, which the classifier tolerates but is not ideal.
     hide_overlay_from_capture: bool = True
@@ -35,6 +36,19 @@ class Settings:
     locked_region: list[int] | None = None
     #: Torch device for the classifier: "auto", "cpu" or "cuda".
     device: str = "auto"
+    #: Classify every frame on CUDA so the GPU stays clocked up: ~80 ms faster reaction to a
+    #: move on a laptop, at the cost of ~6 ms of GPU work per frame. Off = classify on change only.
+    gpu_keep_warm: bool = True
+    #: Stockfish executable; None = search STOCKFISH_PATH, PATH, data/engine and the app folder.
+    engine_path: str | None = None
+    engine_threads: int = 4
+    engine_hash_mb: int = 128
+    #: Candidate moves analysed and drawn (phase 4 makes this depend on the skill level).
+    multipv: int = 3
+    #: Analysis stops after this long per position (the arrows stay up).
+    engine_max_seconds: float = 8.0
+    #: Side panel top-left in Qt logical pixels; None = next to the board.
+    panel_pos: list[int] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 

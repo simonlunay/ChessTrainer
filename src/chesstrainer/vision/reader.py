@@ -6,12 +6,18 @@ import time
 from dataclasses import dataclass, field
 
 import chess
+import numpy as np
 
 from chesstrainer.settings.config import Settings
 from chesstrainer.vision.detect import BoardBox, BoardTracker, Detection
 from chesstrainer.vision.geometry import ImageU8, cell_to_square
 from chesstrainer.vision.orientation import OrientationTracker, coordinate_score
-from chesstrainer.vision.position import PositionReading, PositionTracker, cells_to_squares
+from chesstrainer.vision.position import (
+    PositionReading,
+    PositionTracker,
+    cells_to_squares,
+    repair,
+)
 from chesstrainer.vision.recognizer import F32, PieceRecognizer
 
 
@@ -39,7 +45,9 @@ class BoardReader:
         settings = settings or Settings()
         locked = BoardBox(*settings.locked_region) if settings.locked_region else None
         self.boards = BoardTracker(locked=locked)
-        self.recognizer = recognizer or PieceRecognizer(device=settings.device)
+        self.recognizer = recognizer or PieceRecognizer(
+            device=settings.device, keep_warm=settings.gpu_keep_warm
+        )
         self.orientation = OrientationTracker(settings.orientation)
         self.positions = PositionTracker(stable_frames=stable_frames)
         self._last_box: BoardBox | None = None
@@ -48,9 +56,18 @@ class BoardReader:
         self.orientation.flip()
         self.positions.reset()
 
-    def process(self, frame: ImageU8, now: float | None = None) -> ReaderState:
+    def _same_position(self, cell_probs: F32) -> bool:
+        cur = self.positions.current
+        if cur is None:
+            return False
+        labels, _ = repair(cells_to_squares(cell_probs, self.orientation.white_bottom))
+        return bool(np.array_equal(labels, cur.labels))
+
+    def process(
+        self, frame: ImageU8, now: float | None = None, full_search: bool = True
+    ) -> ReaderState:
         t0 = time.perf_counter()
-        det = self.boards.update(frame, now)
+        det = self.boards.update(frame, now, full_search)
         t1 = time.perf_counter()
         timings = {"detect": (t1 - t0) * 1000}
         if det is None:
@@ -58,14 +75,15 @@ class BoardReader:
                 None, self.orientation.white_bottom, self.positions.current, False, None, timings
             )
         moved = self._last_box is not None and det.box.iou(self._last_box) < 0.5
-        if moved and self.orientation.mode == "auto":
-            # A different board (or the same one moved far): orientation must be re-learned.
-            self.orientation.reset("auto")
         self._last_box = det.box
 
         probs, _ = self.recognizer.classify(frame, det.box)
         t2 = time.perf_counter()
         timings["classify"] = (t2 - t1) * 1000
+        if moved and self.orientation.mode == "auto" and not self._same_position(probs):
+            # A different board: orientation must be re-learned. (The same position in a
+            # window that was dragged or resized keeps its orientation and history.)
+            self.orientation.reset("auto")
 
         coords = coordinate_score(frame, det) if self.orientation.mode == "auto" else None
         white_bottom = self.orientation.update(probs.argmax(axis=1), coords)

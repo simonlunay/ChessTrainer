@@ -228,6 +228,12 @@ class PositionTracker:
     def reset(self) -> None:
         self.__init__(self.accept_margin, self.stable_frames, self.history_size)  # type: ignore[misc]
 
+    @property
+    def pending(self) -> bool:
+        """The last frame was not explained by the committed position (e.g. a move is being made
+        and has not been stable long enough to commit). Clears on commit or when it settles."""
+        return self._pending_key is not None
+
     # -- candidates -------------------------------------------------------------------------
 
     def _move_candidates(

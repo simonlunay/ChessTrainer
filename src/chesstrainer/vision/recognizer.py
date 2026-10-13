@@ -24,10 +24,15 @@ def resolve_device(device: str) -> str:
 
 
 class PieceRecognizer:
-    """Classifies the 64 squares of a board. Skips inference when the board image is unchanged."""
+    """Classifies the 64 squares of a board. Skips inference when the board image is unchanged,
+    except with ``keep_warm`` on CUDA: a laptop GPU left idle between moves clocks down and the
+    first inference after a move then takes ~110 ms instead of ~20 ms, so it runs every frame."""
 
-    def __init__(self, checkpoint: Path = DEFAULT_CHECKPOINT, device: str = "auto") -> None:
+    def __init__(
+        self, checkpoint: Path = DEFAULT_CHECKPOINT, device: str = "auto", keep_warm: bool = False
+    ) -> None:
         self.device = resolve_device(device)
+        self.keep_warm = keep_warm and self.device == "cuda"
         self.model, self.meta = load_checkpoint(checkpoint, self.device)
         self._last_thumb: NDArray[np.int16] | None = None
         self._last_probs: F32 | None = None
@@ -45,7 +50,7 @@ class PieceRecognizer:
         board = frame[max(0, y) : y + h, max(0, x) : x + w]
         thumb = cv2.resize(board, (64, 64), interpolation=cv2.INTER_AREA).astype(np.int16)
         if (
-            not force
+            not (force or self.keep_warm)
             and self._last_probs is not None
             and self._last_thumb is not None
             and np.abs(thumb - self._last_thumb).mean() < 0.5

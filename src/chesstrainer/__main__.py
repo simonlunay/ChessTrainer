@@ -1,15 +1,8 @@
-"""Application entry point. The overlay app arrives in phase 3; until then this points at tools."""
+"""Application entry point: ``python -m chesstrainer`` / ``chesstrainer`` starts the overlay app."""
 
 from __future__ import annotations
 
-
-def main() -> None:
-    print(
-        "ChessTrainer (phase 1).\n"
-        "  Train the classifier: python -m chesstrainer.vision.train\n"
-        "  Evaluate it:          python -m chesstrainer.vision.train --eval-only"
-    )
-
+from chesstrainer.overlay.app import main
 
 if __name__ == "__main__":
     main()

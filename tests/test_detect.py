@@ -81,7 +81,23 @@ def test_tracker_caches_and_redetects_after_move() -> None:
     moved = checkerboard(at=(150, 80))
     det = tracker.update(moved, now=10.0)
     assert det is not None and det.box.corner_error(BoardBox(150, 80, 400, 400)) < 0.05
+    # Same size somewhere else (a dragged window): found by template matching, no full search.
+    assert tracker.relocations == 1 and tracker.full_detections == 1
+    resized = checkerboard(sq=40, at=(100, 60))
+    det = tracker.update(resized, now=11.0)
+    assert det is not None and det.box.corner_error(BoardBox(100, 60, 320, 320)) < 0.05
     assert tracker.full_detections == 2
+
+
+def test_tracker_region_frames_only_verify() -> None:
+    tracker = BoardTracker(redetect_interval=0.0)
+    tracker.update(checkerboard(), now=0.0)
+    moved = checkerboard(at=(150, 80))
+    assert tracker.update(moved, now=1.0, full_search=False) is None
+    assert tracker.full_detections == 1 and tracker.relocations == 0
+    det = tracker.update(moved, now=1.1)  # the full frame that follows still relocates
+    assert det is not None and det.box.corner_error(BoardBox(150, 80, 400, 400)) < 0.05
+    assert tracker.relocations == 1
 
 
 @needs_assets

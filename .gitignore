@@ -13,5 +13,7 @@ data/real/
 data/preview/
 data/models/*.pt
 data/train_log.txt
+data/engine/
+data/demo/
 build/
 dist/

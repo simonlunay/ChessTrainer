@@ -12,7 +12,7 @@ English at your skill level, and runs an opening trainer.
 |---|---|---|
 | 1 | Project setup, synthetic data generator, CNN training + evaluation | **done** |
 | 2 | Board detection + piece recognition → FEN from a live screen | **done** |
-| 3 | Stockfish integration + overlay arrows | |
+| 3 | Stockfish integration + overlay arrows | **done** |
 | 4 | Skill levels + grounded LLM explanations | |
 | 5 | Opening trainer (guided, practice) | |
 | 6 | Review mode, hotkeys, PyInstaller packaging | |
@@ -31,9 +31,21 @@ GPU it still works (the CUDA wheels fall back to CPU), it is just slower to trai
 
 ### Stockfish (needed from phase 3)
 
-Download the binary for your platform from <https://stockfishchess.org/download/>
-(Windows: the `x86-64-avx2` build suits most modern CPUs), extract it, and either put it on your
-`PATH` or set `STOCKFISH_PATH` in `.env` to the full path of the `.exe`.
+Download Stockfish for your platform from <https://stockfishchess.org/download/> (Windows: the
+x86-64 build), unzip it, and put the folder in `data/engine/` (or
+`%APPDATA%\ChessTrainer\engine\`), or put it on your `PATH`, or set `STOCKFISH_PATH` in `.env`
+to the full path of the `.exe`. Without it the app still starts and shows these instructions.
+
+## Running the overlay
+
+```powershell
+uv run chesstrainer                 # arrows over any chess board on screen + side panel
+uv run chesstrainer --demo          # overlay visible to screen recorders (OBS, Snipping Tool)
+uv run chesstrainer --record-gif 20 # record a 20 s demo GIF once a board is found
+```
+
+The best move is a bold green arrow, the two alternatives lighter blue arrows. The side panel
+shows the eval bar and the three lines; "Record GIF" saves a clip to `Videos\ChessTrainer\`.
 
 ### Anthropic API key (needed from phase 4)
 

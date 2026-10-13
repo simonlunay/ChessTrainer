@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import cv2
 import numpy as np
@@ -179,15 +180,21 @@ def _edge_profiles(
     region: ImageU8, rows: tuple[int, int], cols: tuple[int, int]
 ) -> tuple[F64, F64]:
     """Per-column vertical-edge and per-row horizontal-edge strength (max over channels)."""
-    r = region.astype(np.int16)
-    gx = np.abs(np.diff(r, axis=1)).max(axis=2)  # (H, W-1): boundary between col i and i+1
-    gy = np.abs(np.diff(r, axis=0)).max(axis=2)  # (H-1, W)
-    px = gx[rows[0] : rows[1]].sum(axis=0).astype(np.float64)
-    py = gy[:, cols[0] : cols[1]].sum(axis=1).astype(np.float64)
+
+    def chan_max(d: NDArray[Any]) -> ImageU8:
+        return np.asarray(cv2.max(cv2.max(d[..., 0], d[..., 1]), d[..., 2]), dtype=np.uint8)
+
+    # uint8 absdiff/max in OpenCV: same values as int16 numpy, ~10x faster on big regions.
+    gx = chan_max(cv2.absdiff(region[:, 1:], region[:, :-1]))  # (H, W-1): col i | col i+1
+    gy = chan_max(cv2.absdiff(region[1:], region[:-1]))  # (H-1, W)
+    px = gx[rows[0] : rows[1]].sum(axis=0, dtype=np.int64).astype(np.float64)
+    py = gy[:, cols[0] : cols[1]].sum(axis=1, dtype=np.int64).astype(np.float64)
     return px, py
 
 
-def _fit_lattice(profile: F64, s0: float) -> tuple[float, float]:
+def _fit_lattice(
+    profile: F64, s0: float, spacing: tuple[float, float] = (0.85, 1.18)
+) -> tuple[float, float]:
     """Fit lines ``o + k*s`` to an edge profile. Returns (offset, spacing) in boundary coords.
 
     Profile index ``i`` is the boundary at coordinate ``i + 1``.
@@ -198,7 +205,7 @@ def _fit_lattice(profile: F64, s0: float) -> tuple[float, float]:
     prof[:-1] = np.maximum(prof[:-1], profile[1:])
     prof /= prof.max() + 1e-9
     best = (-np.inf, 0.0, s0)
-    for s in np.arange(0.85 * s0, 1.18 * s0, 0.25):
+    for s in np.arange(spacing[0] * s0, spacing[1] * s0, 0.25):
         offsets = np.arange(0.0, s, 0.5)
         k = np.arange(int(n / s) + 2)
         pos = offsets[:, None] + k[None, :] * s
@@ -221,8 +228,11 @@ def _lattice_lines(offset: float, s: float, n: int) -> F64:
     return np.asarray(lines[(lines >= -0.3 * s) & (lines <= n + 0.3 * s)], dtype=np.float64)
 
 
-def refine(frame: ImageU8, approx: BoardBox, s0: float | None = None) -> Detection | None:
-    """Snap an approximate board box to the exact square grid and verify it."""
+def refine(
+    frame: ImageU8, approx: BoardBox, s0: float | None = None, known_size: bool = False
+) -> Detection | None:
+    """Snap an approximate board box to the exact square grid and verify it.
+    ``known_size``: ``s0`` is the exact square size (only the position is searched)."""
     h, w = frame.shape[:2]
     s0 = s0 or approx.square
     if s0 < 6:
@@ -239,8 +249,9 @@ def refine(frame: ImageU8, approx: BoardBox, s0: float | None = None) -> Detecti
     rows = (max(0, int(approx.y - ry0)), min(ry1 - ry0, int(approx.y + approx.h - ry0)))
     cols = (max(0, int(approx.x - rx0)), min(rx1 - rx0, int(approx.x + approx.w - rx0)))
     px, py = _edge_profiles(region, rows, cols)
-    ox, sx = _fit_lattice(px, s0)
-    oy, sy = _fit_lattice(py, s0)
+    spacing = (0.99, 1.01 + 0.25 / s0) if known_size else (0.85, 1.18)
+    ox, sx = _fit_lattice(px, s0, spacing)
+    oy, sy = _fit_lattice(py, s0, spacing)
     xs = _lattice_lines(ox, sx, region.shape[1])
     ys = _lattice_lines(oy, sy, region.shape[0])
     if len(xs) < 9 or len(ys) < 9:
@@ -415,7 +426,14 @@ def detect_board(frame: ImageU8, min_board: int = 96) -> Detection | None:
 
 
 class BoardTracker:
-    """Caches the board location and only re-detects when the cached box stops matching."""
+    """Caches the board location and only re-detects when the cached box stops matching.
+
+    When the cached board disappears (window dragged), the same board at the same size is first
+    looked for with template matching on a downscaled frame (~10 ms) before falling back to a
+    full detection (~100-250 ms on a 2560x1600 screen).
+    """
+
+    THUMB = 48  # side of the board thumbnail used to relocate a moved board
 
     def __init__(
         self,
@@ -427,29 +445,50 @@ class BoardTracker:
         self.redetect_interval = redetect_interval
         self.locked = locked
         self.current: Detection | None = None
+        self._lost: Detection | None = None  # board that just failed verification
+        self._thumb: ImageU8 | None = None
         self._last_full = -np.inf
         self.full_detections = 0  # for diagnostics/tests
+        self.relocations = 0
 
     def reset(self) -> None:
         self.current = None
+        self._lost = None
+        self._thumb = None
         self._last_full = -np.inf
 
-    def update(self, frame: ImageU8, now: float | None = None) -> Detection | None:
+    def update(
+        self, frame: ImageU8, now: float | None = None, full_search: bool = True
+    ) -> Detection | None:
+        """Verify the cached board, else search for one. ``full_search=False`` only verifies
+        (for frames where only the board's neighbourhood is fresh)."""
         now = time.monotonic() if now is None else now
         if self.current is not None:
             det = self._verify(frame, self.current)
             if det is not None:
                 self.current = det
+                self._thumb = _board_thumb(frame, det.box, self.THUMB)
                 return det
-            self.current = None
+            self._lost, self.current = self.current, None
+        if not full_search:
+            return None
         if self.locked is not None:
             self.current = refine(frame, self.locked) or detection_at(frame, self.locked)
             return self.current
+        if self._lost is not None and self._thumb is not None:
+            moved = self._relocate(frame, self._lost, self._thumb)
+            if moved is not None:
+                self.relocations += 1
+                self.current = moved
+                self._thumb = _board_thumb(frame, moved.box, self.THUMB)
+                return moved
         if now - self._last_full < self.redetect_interval:
             return None
         self._last_full = now
         self.full_detections += 1
         self.current = detect_board(frame, self.min_board)
+        self._lost = None
+        self._thumb = _board_thumb(frame, self.current.box, self.THUMB) if self.current else None
         return self.current
 
     @staticmethod
@@ -461,3 +500,30 @@ class BoardTracker:
         if drift > 0.5 * prev.contrast:  # different theme or a different board at the same spot
             return None
         return det
+
+    @staticmethod
+    def _relocate(frame: ImageU8, prev: Detection, thumb: ImageU8) -> Detection | None:
+        """The same board, same size, somewhere else on the screen (a dragged window)."""
+        f = thumb.shape[1] / prev.box.w
+        small = cv2.resize(
+            cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY), None, fx=f, fy=f, interpolation=cv2.INTER_AREA
+        )
+        if small.shape[0] < thumb.shape[0] or small.shape[1] < thumb.shape[1]:
+            return None
+        res = cv2.matchTemplate(small, thumb, cv2.TM_CCOEFF_NORMED)
+        _, best, _, loc = cv2.minMaxLoc(res)
+        if best < 0.7:
+            return None
+        approx = BoardBox(loc[0] / f, loc[1] / f, prev.box.w, prev.box.h)
+        det = refine(frame, approx, prev.box.square, known_size=True)
+        if det is None or abs(det.box.w - prev.box.w) > 0.02 * prev.box.w:
+            return None  # resized: leave it to full detection
+        drift = max(np.linalg.norm(det.light - prev.light), np.linalg.norm(det.dark - prev.dark))
+        return None if drift > 0.5 * prev.contrast else det
+
+
+def _board_thumb(frame: ImageU8, box: BoardBox, side: int) -> ImageU8:
+    x, y, w, h = box.as_int()
+    crop = frame[max(0, y) : y + h, max(0, x) : x + w]
+    gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+    return np.asarray(cv2.resize(gray, (side, side), interpolation=cv2.INTER_AREA), dtype=np.uint8)
