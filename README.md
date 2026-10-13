@@ -11,7 +11,7 @@ English at your skill level, and runs an opening trainer.
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Project setup, synthetic data generator, CNN training + evaluation | **done** |
-| 2 | Board detection + piece recognition → FEN from a live screen | next |
+| 2 | Board detection + piece recognition → FEN from a live screen | **done** |
 | 3 | Stockfish integration + overlay arrows | |
 | 4 | Skill levels + grounded LLM explanations | |
 | 5 | Opening trainer (guided, practice) | |
@@ -87,6 +87,44 @@ precision/recall, and the most common confusions.
 **Your own screenshots**: put tightly cropped board images in `data/real/` and add rows to
 `data/real/labels.csv` (`file,fen,white_bottom`; the FEN only needs the piece-placement field).
 
+## Reading the board from the screen (phase 2)
+
+```powershell
+uv run python -m chesstrainer.vision.live                  # print the FEN whenever it changes
+uv run python -m chesstrainer.vision.live --select         # drag a box around the board (saved)
+uv run python -m chesstrainer.vision.live --clear-region   # back to automatic detection
+uv run python -m chesstrainer.vision.live --orientation black   # or white / auto (saved)
+uv run python -m chesstrainer.vision.live --image shot.png --debug-dir out/
+```
+
+How it works:
+
+- **Detection** (`vision/detect.py`): edge contours propose boards; a lattice fit on edge
+  projections snaps to the exact squares; a checkerboard colour test (top-left must be the light
+  square) verifies. The box is cached and re-checked each frame; full detection only runs when
+  the board moves, changes, or disappears.
+- **Orientation** (`vision/orientation.py`): coordinate labels when the site draws them (the "8"
+  has two enclosed holes, the "1" none) plus piece placement (pawn direction, kings, piece mass).
+  Once confident it sticks; `--orientation` or a manual flip overrides it.
+- **Position** (`vision/position.py`): per-square argmax, then legality repair (two kings of one
+  colour: the more confident stays and the other takes its next most likely class; a missing king
+  is restored from the most king-like square; no pawns on back ranks; at most 8 pawns). Each new
+  frame is then explained by the game so far (no change, any legal move, any two moves, or an
+  earlier position). That fixes low-confidence squares and gives exact side to move, castling
+  rights and en passant. Positions seen without history get these from check status, the
+  last-move highlight, or (last resort) "the side at the bottom moves". Changes must hold for two
+  frames, so animations and drags are ignored.
+- **Settings** live in `%APPDATA%\ChessTrainer\settings.json`: monitor, fps, orientation, saved
+  region, and `hide_overlay_from_capture` (default **on**: the overlay is invisible to screen
+  capture via `SetWindowDisplayAffinity`; turn it off to record demo GIFs).
+
+Evaluation:
+
+```powershell
+uv run python scripts/eval_phase2.py     # real boards, real boards in cluttered pages, synthetic screens
+uv run python scripts/live_selftest.py   # plays a real lichess-rendered game on screen, reads it via capture
+```
+
 ## Licences
 
 Piece sets and board textures are downloaded from
@@ -100,13 +138,14 @@ retraining if that matters.
 
 ```
 src/chesstrainer/
-  capture/     screen capture (phase 2)
-  vision/      assets, synthetic generator, geometry, CNN, training, evaluation
+  capture/     screen capture (mss)
+  vision/      assets, synthetic generator, CNN + training, detection, orientation,
+               position tracking, the live reader
   engine/      Stockfish (phase 3)
   explain/     grounded facts + Claude explanations (phase 4)
   openings/    opening trainer (phase 5)
-  overlay/     PyQt6 overlay and side panel (phase 3)
-  settings/    skill levels, levels.yaml (phase 4)
+  overlay/     drag-to-select, capture exclusion; overlay and side panel (phase 3)
+  settings/    user settings (JSON); skill levels, levels.yaml (phase 4)
 data/          downloaded assets, eval sets, model checkpoints (mostly git-ignored)
 scripts/       asset download, previews, real-eval fetch
 tests/

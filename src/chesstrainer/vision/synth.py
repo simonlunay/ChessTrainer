@@ -315,12 +315,14 @@ def render_scene(
 # --------------------------------------------------------------------------- degradation
 
 
-def degrade(scene: Scene, rng: np.random.Generator) -> Scene:
+def degrade(
+    scene: Scene, rng: np.random.Generator, rescale: bool = True, jpeg: bool = True
+) -> Scene:
     """Photometric/resampling degradation imitating screenshots of real sites."""
     img: NDArray[Any] = scene.image
     x, y, w, h = scene.bbox
     # Non-integer rescale (browser zoom, HiDPI scaling).
-    if rng.random() < 0.7:
+    if rng.random() < 0.7 and rescale:
         f = float(rng.uniform(0.6, 1.4))
         new_w = max(8, int(round(img.shape[1] * f)))
         new_h = max(8, int(round(img.shape[0] * f)))
@@ -350,7 +352,7 @@ def degrade(scene: Scene, rng: np.random.Generator) -> Scene:
     if rng.random() < 0.2:
         noise = rng.standard_normal(img.shape, dtype=np.float32) * float(rng.uniform(2, 8))
         img = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
-    if rng.random() < 0.4:
+    if rng.random() < 0.4 and jpeg:
         buf = io.BytesIO()
         Image.fromarray(img).save(buf, format="JPEG", quality=int(rng.integers(30, 95)))
         img = np.asarray(Image.open(buf).convert("RGB"), dtype=np.uint8)
