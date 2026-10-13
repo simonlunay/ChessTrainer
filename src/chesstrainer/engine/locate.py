@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from chesstrainer.settings.config import settings_path
+from chesstrainer.settings.env import load_env
 
 DOWNLOAD_URL = "https://stockfishchess.org/download/"
 _EXE = ".exe" if sys.platform == "win32" else ""
@@ -52,14 +53,6 @@ class EngineSearch:
         return "\n".join(lines)
 
 
-def _load_dotenv() -> None:
-    try:
-        from dotenv import load_dotenv
-    except ImportError:  # pragma: no cover - dependency is declared
-        return
-    load_dotenv(_PROJECT_ROOT / ".env", override=False)
-
-
 def _is_exe(p: Path) -> bool:
     return p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK))
 
@@ -75,7 +68,7 @@ def _search_dir(d: Path) -> Path | None:
 
 
 def find_stockfish(configured: str | None = None) -> EngineSearch:
-    _load_dotenv()
+    load_env()
     tried: list[str] = []
     for source, value in (("settings engine_path", configured), ("STOCKFISH_PATH", None)):
         if source == "STOCKFISH_PATH":

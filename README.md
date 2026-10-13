@@ -13,7 +13,7 @@ English at your skill level, and runs an opening trainer.
 | 1 | Project setup, synthetic data generator, CNN training + evaluation | **done** |
 | 2 | Board detection + piece recognition → FEN from a live screen | **done** |
 | 3 | Stockfish integration + overlay arrows | **done** |
-| 4 | Skill levels + grounded LLM explanations | |
+| 4 | Skill levels + grounded LLM explanations | **done** |
 | 5 | Opening trainer (guided, practice) | |
 | 6 | Review mode, hotkeys, PyInstaller packaging | |
 
@@ -47,12 +47,47 @@ uv run chesstrainer --record-gif 20 # record a 20 s demo GIF once a board is fou
 The best move is a bold green arrow, the two alternatives lighter blue arrows. The side panel
 shows the eval bar and the three lines; "Record GIF" saves a clip to `Videos\ChessTrainer\`.
 
-### Anthropic API key (needed from phase 4)
+### Anthropic API key (for explanations)
 
-Create `.env` in the project root (it is git-ignored):
+Create `.env` in the project root (it is git-ignored), or in `%APPDATA%\ChessTrainer\`:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Without a key the app still runs (arrows, engine lines); the explanation area says how to add one.
+
+## Skill levels and explanations (phase 4)
+
+On first launch ChessTrainer asks for your level (Beginner is preselected); change it any time in
+the side panel. Everything that depends on the level lives in `src/chesstrainer/levels.yaml`:
+
+| Level | Elo | Moves shown | Practical move | Explanation |
+|---|---|---|---|---|
+| Beginner | < 800 | 1 | yes (within 0.6 pawns) | 1-2 simple sentences, terms defined, no numbers |
+| Novice | 800-1200 | 2 | yes (within 0.35) | 2 sentences, names the idea |
+| Intermediate | 1200-1600 | 3 | no | 2-3 sentences, tactics + positional facts, eval |
+| Advanced | 1600-2000 | 3 | no | 3 sentences, standard terms, eval + key line |
+| Expert | 2000+ | 3 | no | 3 sentences, concise, eval + key line |
+
+**Practical move**: at Beginner/Novice a simpler candidate (e.g. winning material outright
+instead of a quiet positional move) is shown first when it is barely worse than Stockfish's top
+move; the panel says that the top move is slightly better.
+
+**Grounded explanations**: `explain/facts.py` computes facts about the suggested move with
+python-chess and Stockfish's line (captures, checks and replies, hanging pieces, threats made and
+stopped, forks, pins, skewers, discovered attacks, material over the line, development, centre,
+open files, passed pawns, pawn structure, evaluation). Only those facts, the move and the level
+are sent to Claude, which is told to use nothing else. An explanation is requested once the
+position has been on screen for 1.5 s and Stockfish has reached depth 16, and results are cached
+on disk (`%APPDATA%\ChessTrainer\explanations.sqlite`) by position + move + level + model.
+Hover over an explanation to see the facts it was written from.
+
+Settings (`settings.json`): `skill_level`, `explanations` (on/off), `explain_model` (default
+`claude-haiku-5-5`), `explain_effort` (default `medium`), `explain_delay_s`, `explain_min_depth`.
+
+```powershell
+uv run python scripts/eval_phase4.py   # 30 positions x 5 levels, checked against their facts
 ```
 
 ## Training the piece classifier
@@ -156,8 +191,9 @@ src/chesstrainer/
   engine/      Stockfish (phase 3)
   explain/     grounded facts + Claude explanations (phase 4)
   openings/    opening trainer (phase 5)
-  overlay/     drag-to-select, capture exclusion; overlay and side panel (phase 3)
-  settings/    user settings (JSON); skill levels, levels.yaml (phase 4)
+  overlay/     overlay, side panel, level prompt, drag-to-select, capture exclusion
+  settings/    user settings (JSON), .env loading
+  levels.py    skill levels, loaded from levels.yaml
 data/          downloaded assets, eval sets, model checkpoints (mostly git-ignored)
 scripts/       asset download, previews, real-eval fetch
 tests/

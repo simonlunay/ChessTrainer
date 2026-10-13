@@ -49,6 +49,22 @@ class Settings:
     engine_max_seconds: float = 8.0
     #: Side panel top-left in Qt logical pixels; None = next to the board.
     panel_pos: list[int] | None = None
+    #: Skill level key from ``levels.yaml`` (beginner, novice, intermediate, advanced, expert).
+    skill_level: str = "beginner"
+    #: False until the user confirmed a level in the first-launch prompt.
+    level_chosen: bool = False
+    #: Plain-English explanations of the suggested move (needs ANTHROPIC_API_KEY).
+    explanations: bool = True
+    #: Claude model for explanations: they run often, so a fast, cheap one by default.
+    explain_model: str = "claude-haiku-5-5"
+    #: Claude effort ("low" | "medium" | "high"). Phase-4 eval: medium flagged 7-9% of
+    #: explanations as containing an unsupported claim vs 22-25% at low, at ~3.0 s vs ~1.2 s.
+    explain_effort: str = "medium"
+    #: The position must stay unchanged this long before it is explained (no API call per move
+    #: while a game or a replay is moving fast).
+    explain_delay_s: float = 1.5
+    #: ...and the engine must have reached this depth (or finished), so the move is settled.
+    explain_min_depth: int = 16
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -75,6 +91,10 @@ def load_settings(path: Path | None = None) -> Settings:
     settings = Settings(**{k: v for k, v in raw.items() if k in known})
     if settings.orientation not in ("auto", "white", "black"):
         settings.orientation = "auto"
+    from chesstrainer.levels import LEVEL_KEYS  # local: levels imports nothing from here
+
+    if settings.skill_level not in LEVEL_KEYS:
+        settings.skill_level = "beginner"
     return settings
 
 

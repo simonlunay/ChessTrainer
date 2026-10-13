@@ -1,0 +1,29 @@
+# Phase 4 explanation eval: curated positions (the 5 distinct positions from the user's real
+# screenshots are added by scripts/eval_phase4.py by reading the screenshots themselves).
+# theme = what the position was picked for; the facts are computed independently of it.
+positions:
+  - {name: knight fork with check, theme: fork, fen: "r3k2r/ppp2ppp/8/1N6/8/8/PPP2PPP/4K2R w Kkq - 0 18"}
+  - {name: bishop skewer, theme: skewer, fen: "q7/8/2k5/8/8/8/8/1B2K3 w - - 0 52"}
+  - {name: discovered check, theme: discovered, fen: "4k3/8/8/8/4N3/1q6/6PP/4R1K1 w - - 0 31"}
+  - {name: queen left en prise, theme: hanging piece, fen: "rnb1kbnr/pppp1ppp/8/4p1q1/4P3/3P4/PPP2PPP/RNBQKBNR w KQkq - 1 3"}
+  - {name: undefended e5 pawn, theme: hanging pawn, fen: "rnbqk1nr/pppp1ppp/8/2b1p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3"}
+  - {name: back-rank mate, theme: mate, fen: "6k1/5ppp/8/8/8/8/5PPP/3R2K1 w - - 0 28"}
+  - {name: scholar's mate, theme: mate, fen: "r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4"}
+  - {name: queen and king mate, theme: mate, fen: "7k/5Q2/6K1/8/8/8/8/8 w - - 0 61"}
+  - {name: promotion, theme: promotion, fen: "8/4P3/8/8/8/2k5/8/4K3 w - - 0 55"}
+  - {name: en passant, theme: en passant, fen: "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 41"}
+  - {name: Italian castles, theme: castling, fen: "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 1 5"}
+  - {name: after 1.e4 e5, theme: development, fen: "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"}
+  - {name: Italian, Black to move, theme: development, fen: "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3"}
+  - {name: Sicilian, Black to move, theme: opening, fen: "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"}
+  - {name: Queen's Gambit, Black to move, theme: opening, fen: "rnbqkbnr/ppp1pppp/8/3p4/2PP4/8/PP2PPPP/RNBQKBNR b KQkq c3 0 2"}
+  - {name: London System, theme: opening, fen: "rnbqkb1r/ppp1pppp/5n2/3p4/3P1B2/8/PPP1PPPP/RN1QKBNR w KQkq - 2 3"}
+  - {name: Ruy Lopez after a6, theme: threat, fen: "r1bqkbnr/1ppp1ppp/p1n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4"}
+  - {name: Bb5 pin available, theme: pin, fen: "r1bqkbnr/ppp2ppp/2np4/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 4"}
+  - {name: Lucena position, theme: rook endgame, fen: "1K1k4/1P6/8/8/8/8/r7/2R5 w - - 0 60"}
+  - {name: king and pawn opposition, theme: pawn endgame, fen: "8/8/8/4k3/8/4K3/4P3/8 w - - 0 50"}
+  - {name: outside passed pawn, theme: passed pawn, fen: "8/5k2/8/1P6/8/8/5K2/8 w - - 0 45"}
+  - {name: rooks against a rook, theme: material, fen: "r5k1/5ppp/8/8/8/8/5PPP/R2R2K1 w - - 0 30"}
+  - {name: exchange in the centre, theme: trade, fen: "rnbqkbnr/ppp2ppp/8/3pp3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq d6 0 3"}
+  - {name: Greek gift setup, theme: attack, fen: "r1bq1rk1/pppn1ppp/4p3/3pP3/1b1P4/2NB1N2/PPP2PPP/R2QK2R w KQ - 0 8"}
+  - {name: Black wins a piece, theme: tactics (Black), fen: "r1bqkb1r/pppp1ppp/2n5/4p3/2B1n3/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 0 5"}

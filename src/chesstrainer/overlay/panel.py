@@ -1,7 +1,4 @@
-"""Side panel: eval bar, candidate moves with their lines, status, and controls.
-
-The explanation and skill-level areas are placeholders until phase 4.
-"""
+"""Side panel: eval bar, candidate moves with their lines, explanation, level, and controls."""
 
 from __future__ import annotations
 
@@ -11,6 +8,7 @@ import chess
 from PyQt6.QtCore import QRectF, Qt, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QColor, QFont, QPainter, QPaintEvent
 from PyQt6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -22,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from chesstrainer.engine.analysis import Analysis, Line
+from chesstrainer.levels import all_levels
 from chesstrainer.overlay.board_overlay import style_for
 
 PV_PLIES = 8
@@ -68,13 +67,14 @@ class SidePanel(QWidget):
     switch_turn_clicked = pyqtSignal()
     pause_toggled = pyqtSignal(bool)
     record_toggled = pyqtSignal(bool)
+    level_changed = pyqtSignal(str)  # level key
     closed = pyqtSignal()
 
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("ChessTrainer")
         self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
-        self.resize(360, 460)
+        self.resize(380, 520)
 
         self.eval_bar = EvalBar()
         self.status = QLabel("Starting…")
@@ -94,9 +94,23 @@ class SidePanel(QWidget):
         self.depth_label = QLabel()
         self.depth_label.setStyleSheet("color: gray")
 
-        self.explanation = QLabel("<i>Plain-English explanations arrive in phase 4.</i>")
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet("color: #8a6d00")
+        self.note.hide()
+        self.explanation = QLabel()
         self.explanation.setWordWrap(True)
-        self.level = QLabel("Level: <i>not set (phase 4)</i>")
+        self.explanation.setTextFormat(Qt.TextFormat.PlainText)
+        self.explanation.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.explanation.setMinimumHeight(60)
+        self.explanation.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.level = QComboBox()
+        for lv in all_levels():
+            self.level.addItem(lv.label, lv.key)
+        self.level.setToolTip("Changes how many moves are shown and how they are explained.")
+        self.level.currentIndexChanged.connect(
+            lambda i: self.level_changed.emit(str(self.level.itemData(i)))
+        )
 
         self.turn_button = QPushButton("Other side to move")
         self.turn_button.setToolTip("The side to move was guessed; analyse for the other side.")
@@ -124,11 +138,14 @@ class SidePanel(QWidget):
         right.addWidget(self.turn_button)
         right.addWidget(_rule())
         right.addLayout(cand)
+        right.addWidget(self.note)
         right.addWidget(self.depth_label)
         right.addWidget(_rule())
-        right.addWidget(self.explanation)
-        right.addStretch(1)
-        right.addWidget(self.level)
+        right.addWidget(self.explanation, 1)
+        level_row = QHBoxLayout()
+        level_row.addWidget(QLabel("Level:"))
+        level_row.addWidget(self.level, 1)
+        right.addLayout(level_row)
         buttons = QGridLayout()
         buttons.addWidget(flip, 0, 0)
         buttons.addWidget(select, 0, 1)
@@ -153,20 +170,44 @@ class SidePanel(QWidget):
     def clear_analysis(self, note: str = "") -> None:
         for label in self.lines:
             label.clear()
+        self.note.hide()
         self.depth_label.setText(note)
         self.eval_bar.set_value(0.5, "", self.eval_bar.white_bottom)
 
-    def show_analysis(self, analysis: Analysis, white_bottom: bool) -> None:
+    def show_analysis(
+        self,
+        analysis: Analysis,
+        white_bottom: bool,
+        lines: tuple[Line, ...] | None = None,
+        note: str = "",
+    ) -> None:
+        """``lines``: the candidates to list (default: all); ``note``: e.g. practical move."""
         board = chess.Board(analysis.fen)
+        shown = analysis.lines if lines is None else lines
         for i, label in enumerate(self.lines):
-            if i < len(analysis.lines):
-                label.setText(_line_html(board, analysis.lines[i]))
+            if i < len(shown):
+                label.setText(_line_html(board, shown[i]))
             else:
                 label.clear()
+        self.note.setText(note)
+        self.note.setVisible(bool(note))
         best = analysis.best
         self.eval_bar.set_value(best.white_win_fraction(), best.score_text(), white_bottom)
         state = "done" if analysis.final else "thinking"
         self.depth_label.setText(f"depth {analysis.depth} · {analysis.elapsed:.1f}s · {state}")
+
+    def set_explanation(self, text: str, *, status: bool = False, tooltip: str = "") -> None:
+        """Explanation text, or a grey status line ("Explaining…", errors) when ``status``."""
+        self.explanation.setStyleSheet("color: gray; font-style: italic" if status else "")
+        self.explanation.setText(text)
+        self.explanation.setToolTip(tooltip)
+
+    def set_level(self, key: str) -> None:
+        i = self.level.findData(key)
+        if i >= 0 and i != self.level.currentIndex():
+            self.level.blockSignals(True)
+            self.level.setCurrentIndex(i)
+            self.level.blockSignals(False)
 
     def set_recording(self, on: bool, text: str | None = None) -> None:
         self.record.blockSignals(True)

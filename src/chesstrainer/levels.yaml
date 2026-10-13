@@ -1,0 +1,119 @@
+# Everything that depends on the player's skill level. Loaded by chesstrainer/levels.py.
+#
+# Centipawns (cp) are always from the point of view of the side to move; 100 cp = one pawn.
+#
+#   candidates           number of engine moves drawn as arrows / listed in the panel
+#   practical_margin_cp  prefer a simpler candidate when it is at most this much worse than the
+#                        engine's top move (0 = always show the top move first)
+#   practical_min_gain   ...and when its simplicity score is at least this much higher
+#   review               phase 6: a move losing at least this many cp is flagged (null = never)
+#   openings             recommended openings (Lichess chess-openings names), by side
+#   opening_depth_plies  phase 5: how deep trainer lines go
+#   explanation          what Claude is asked for (see chesstrainer/explain/prompt.py)
+#     sentences          length of the explanation
+#     style              tone and vocabulary
+#     pv_plies           plies of the engine line included in the facts
+#     eval_numbers       give the evaluation as a number (+1.2) or only in words
+
+levels:
+  - key: beginner
+    name: Beginner
+    elo: [0, 800]
+    candidates: 1
+    practical_margin_cp: 60
+    practical_min_gain: 2
+    review: {inaccuracy: null, mistake: 250, blunder: 400}
+    openings:
+      white: [Italian Game, London System]
+      black: [Italian Game, Queen's Gambit Declined]
+    opening_depth_plies: 8
+    explanation:
+      sentences: "1-2"
+      style: >-
+        The player is a beginner (under 800 Elo). Use very simple, friendly words and short
+        sentences. Say what the move does in concrete terms (which piece moves, what it takes,
+        attacks or protects). If you use a chess word such as fork, pin, check or develop,
+        define it in a few words. Do not use evaluation numbers; describe the position in words.
+      pv_plies: 2
+      eval_numbers: false
+
+  - key: novice
+    name: Novice
+    elo: [800, 1200]
+    candidates: 2
+    practical_margin_cp: 35
+    practical_min_gain: 2
+    review: {inaccuracy: null, mistake: 150, blunder: 300}
+    openings:
+      white: [Italian Game, London System, Queen's Gambit]
+      black: [Scandinavian Defense, Queen's Gambit Declined]
+    opening_depth_plies: 10
+    explanation:
+      sentences: "2"
+      style: >-
+        The player is a novice (800-1200 Elo). Use plain language. Name the tactic or idea if
+        there is one (fork, pin, hanging piece, development) and briefly say why it matters.
+        Mention the opponent's expected reply when it helps. Avoid evaluation numbers unless the
+        advantage is large.
+      pv_plies: 3
+      eval_numbers: false
+
+  - key: intermediate
+    name: Intermediate
+    elo: [1200, 1600]
+    candidates: 3
+    practical_margin_cp: 0
+    practical_min_gain: 99
+    review: {inaccuracy: 80, mistake: 150, blunder: 300}
+    openings:
+      white: [Ruy Lopez, Queen's Gambit, Italian Game]
+      black: [Caro-Kann Defense, Slav Defense, Sicilian Defense]
+    opening_depth_plies: 14
+    explanation:
+      sentences: "2-3"
+      style: >-
+        The player is intermediate (1200-1600 Elo). Explain the tactical point and, when the
+        facts support it, the positional idea (development, centre, open files, pawn structure,
+        king safety). You may give the evaluation as a number.
+      pv_plies: 4
+      eval_numbers: true
+
+  - key: advanced
+    name: Advanced
+    elo: [1600, 2000]
+    candidates: 3
+    practical_margin_cp: 0
+    practical_min_gain: 99
+    review: {inaccuracy: 50, mistake: 100, blunder: 250}
+    openings:
+      white: [Ruy Lopez, Catalan Opening, English Opening]
+      black: [Sicilian Defense, Nimzo-Indian Defense, Caro-Kann Defense]
+    opening_depth_plies: 18
+    explanation:
+      sentences: "3"
+      style: >-
+        The player is advanced (1600-2000 Elo). Use standard chess terminology without
+        defining it. Give the evaluation, and quote at most the first four moves of the
+        expected line in standard notation.
+      pv_plies: 6
+      eval_numbers: true
+
+  - key: expert
+    name: Expert
+    elo: [2000, null]
+    candidates: 3
+    practical_margin_cp: 0
+    practical_min_gain: 99
+    review: {inaccuracy: 40, mistake: 90, blunder: 200}
+    openings:
+      white: [Ruy Lopez, Catalan Opening, Queen's Gambit]
+      black: [Sicilian Defense, Nimzo-Indian Defense, Grunfeld Defense]
+    opening_depth_plies: 24
+    explanation:
+      sentences: "3"
+      style: >-
+        The player is an expert (2000+ Elo). Be concise and precise and use standard
+        terminology. Give the evaluation, quote at most the first four moves of the expected
+        line, and mention another candidate move only if it adds something.
+      pv_plies: 8
+      eval_numbers: true

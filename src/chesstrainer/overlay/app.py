@@ -1,4 +1,4 @@
-"""The ChessTrainer overlay app: live board reading -> Stockfish -> arrows over the board.
+"""The ChessTrainer overlay app: board reading -> Stockfish -> arrows + explanation.
 
     python -m uv run chesstrainer                 # or: python -m chesstrainer
     python -m uv run chesstrainer --demo          # overlay visible to screen recorders
@@ -9,6 +9,12 @@ frame -> :class:`TrainerApp` places the overlay on the board and, when a new pos
 committed, asks :class:`AnalysisEngine` for it (stale searches are stopped). Arrows are hidden
 whenever the screen shows something other than the analysed position (a move in progress, a new
 position waiting for its first result, or no board).
+
+The skill level picks how many candidates are drawn and whether a simpler "practical" move is
+shown first (``explain/practical.py``). Once a position has been on screen for
+``explain_delay_s`` and the engine has reached ``explain_min_depth``, the suggested move is
+explained by Claude from facts computed with python-chess (``explain/``), at most once per
+position + move + level (cached on disk).
 """
 
 from __future__ import annotations
@@ -30,6 +36,15 @@ from PyQt6.QtWidgets import QApplication
 from chesstrainer.capture.screen import MonitorInfo, ScreenCapture
 from chesstrainer.engine.analysis import Analysis, AnalysisEngine
 from chesstrainer.engine.locate import DOWNLOAD_URL, find_stockfish
+from chesstrainer.explain.explainer import (
+    Explainer,
+    ExplainWorker,
+    Explanation,
+    ExplanationCache,
+)
+from chesstrainer.explain.facts import compute_facts, eval_number
+from chesstrainer.explain.practical import Suggestion, suggest
+from chesstrainer.levels import Level, get_level
 from chesstrainer.overlay.board_overlay import Arrow, BoardOverlay
 from chesstrainer.overlay.capture_exclusion import apply_capture_setting
 from chesstrainer.overlay.gif_recorder import GifRecorder
@@ -74,6 +89,7 @@ class TrainerApp(QObject):
     engine_update = pyqtSignal(object)  # Analysis, emitted from the engine thread
     engine_error = pyqtSignal(str)
     recording_done = pyqtSignal(object, str)  # Path | None, message
+    explain_result = pyqtSignal(int, object, object)  # request id, Explanation | None, error
 
     def __init__(
         self,
@@ -115,6 +131,31 @@ class TrainerApp(QObject):
         self.latencies: list[MoveLatency] = []
         self.last_snapshot: Snapshot | None = None
 
+        self.level: Level = get_level(settings.skill_level)
+        self.suggestion: Suggestion | None = None
+        self._position_t = 0.0  # when the analysed position appeared
+        self._explained: tuple[str, str, str] | None = None  # (fen, move, level) requested
+        self._facts_text = ""
+        self.explain_req: int | None = None
+        self.explanations: list[tuple[str, str, Explanation]] = []  # (fen, level, result)
+        self.explainer: Explainer | None = None
+        self.explain_worker: ExplainWorker | None = None
+        self.explain_status = ""
+        if settings.explanations:
+            self.explainer = Explainer(
+                settings.explain_model, settings.explain_effort, cache=ExplanationCache()
+            )
+            if self.explainer.available:
+                self.explain_worker = ExplainWorker(self.explainer, self.explain_result.emit)
+            else:
+                self.explain_status = self.explainer.unavailable_reason
+                print(self.explain_status, file=sys.stderr)
+        else:
+            self.explain_status = "Explanations are turned off (explanations: false in settings)."
+        self._explain_timer = QTimer(self)
+        self._explain_timer.setSingleShot(True)
+        self._explain_timer.timeout.connect(self._maybe_explain)
+
         self.engine: AnalysisEngine | None = None
         self.engine_status = ""
         search = find_stockfish(settings.engine_path)
@@ -141,6 +182,8 @@ class TrainerApp(QObject):
         self.engine_update.connect(self.on_engine_update)
         self.engine_error.connect(self.on_engine_error)
         self.recording_done.connect(self.on_recording_done)
+        self.explain_result.connect(self.on_explain_result)
+        self.panel.level_changed.connect(self.set_level)
         self.vision.snapshot.connect(self.on_snapshot)
         self.vision.failed.connect(lambda msg: self.panel.set_status(msg))
         self.panel.flip_clicked.connect(self.flip)
@@ -155,6 +198,14 @@ class TrainerApp(QObject):
     # -- lifecycle ---------------------------------------------------------------------------
 
     def start(self) -> None:
+        if not self.settings.level_chosen:
+            from chesstrainer.overlay.level_dialog import ask_level
+
+            self.settings.skill_level = ask_level(self.settings.skill_level)
+            self.settings.level_chosen = True
+            save_settings(self.settings)
+            self.level = get_level(self.settings.skill_level)
+        self.panel.set_level(self.level.key)
         if self.settings.panel_pos:
             self.panel.move(*self.settings.panel_pos)
         self.panel.show()
@@ -173,6 +224,8 @@ class TrainerApp(QObject):
         self.vision.stop()
         if self.engine is not None:
             self.engine.close()
+        if self.explain_worker is not None:
+            self.explain_worker.close()
         self.overlay.close()
         app = QApplication.instance()
         if app is not None:
@@ -222,6 +275,7 @@ class TrainerApp(QObject):
         if not snap.pending:
             self._move_seen = None
         self._refresh_arrows()
+        self._maybe_explain()
 
     def _new_position(self, reading: PositionReading) -> None:
         self.reading_fen = reading.fen
@@ -231,8 +285,10 @@ class TrainerApp(QObject):
     def _analyse(self, board: chess.Board) -> None:
         self.board = board
         self.analysis = None
+        self.suggestion = None
         self.req_id = None
         self.panel.clear_analysis()
+        self._reset_explanation()
         self.panel.set_turn_assumed(self.turn_assumed)
         if self.engine is None:
             self._status()
@@ -256,7 +312,8 @@ class TrainerApp(QObject):
         if not show or a is None:
             self.overlay.clear()
             return
-        arrows = [Arrow.from_move(line.move, line.rank) for line in a.lines]
+        lines = self.suggestion.lines if self.suggestion is not None else a.lines
+        arrows = [Arrow.from_move(line.move, line.rank) for line in lines]
         first = not self.overlay.arrows
         self.overlay.set_arrows(arrows, self.white_bottom)
         lat = self._open_latency
@@ -279,10 +336,106 @@ class TrainerApp(QObject):
         if analysis.request_id != self.req_id:
             return  # result for a position that is no longer on screen
         self.analysis = analysis
-        self.panel.show_analysis(analysis, self.white_bottom)
+        self._show_analysis()
         self._refresh_arrows()
+        self._maybe_explain()
         if analysis.final:
             self._status()
+
+    def _show_analysis(self) -> None:
+        a, board = self.analysis, self.board
+        if a is None or board is None or a.fen != board.fen():
+            return
+        self.suggestion = suggest(board, a.lines, self.level)
+        note = ""
+        if self.suggestion.practical:
+            best, chosen = self.suggestion.engine_best, self.suggestion.line
+            note = (
+                f"Suggested: {board.san(chosen.move)} ({eval_number(chosen)}), easier to play. "
+                f"Stockfish's top move {board.san(best.move)} ({eval_number(best)}) is "
+                "slightly better."
+            )
+        self.panel.show_analysis(a, self.white_bottom, self.suggestion.lines, note)
+
+    # -- explanations ------------------------------------------------------------------------
+
+    def _reset_explanation(self) -> None:
+        self._position_t = time.perf_counter()
+        self._explained = None
+        self.explain_req = None
+        self._explain_timer.start(int(self.settings.explain_delay_s * 1000) + 10)
+        if self.explain_status:
+            self.panel.set_explanation(self.explain_status, status=True)
+        else:
+            self.panel.set_explanation("")
+
+    def _maybe_explain(self) -> None:
+        """Explain the suggested move once the position is stable and the analysis settled."""
+        if self.explainer is None or not self.explainer.available:
+            return
+        a, board, sug = self.analysis, self.board, self.suggestion
+        if a is None or board is None or sug is None or a.fen != board.fen():
+            return
+        if self.pending or self.paused:
+            return
+        waited = time.perf_counter() - self._position_t
+        if waited < self.settings.explain_delay_s:
+            self._explain_timer.start(int((self.settings.explain_delay_s - waited) * 1000) + 10)
+            return
+        if not a.final and a.depth < self.settings.explain_min_depth:
+            return  # the next engine update calls this again
+        key = (board.fen(), sug.move.uci(), self.level.key)
+        if key == self._explained:
+            return
+        self._explained = key
+        facts = compute_facts(
+            board,
+            sug.line,
+            self.level,
+            engine_best=sug.engine_best if sug.practical else None,
+            alternatives=sug.lines[1:] if self.level.explanation.eval_numbers else (),
+        )
+        self._facts_text = facts.text()
+        hit = self.explainer.cached(facts, self.level)
+        if hit is not None:
+            self.explain_req = None
+            self._show_explanation(hit)
+            return
+        assert self.explain_worker is not None
+        self.panel.set_explanation(f"Explaining {facts.san}\u2026", status=True)
+        self.explain_req = self.explain_worker.submit(facts, self.level)
+
+    def on_explain_result(
+        self, request_id: int, result: Explanation | None, error: str | None
+    ) -> None:
+        if request_id != self.explain_req:
+            return  # for a position or level that is no longer shown
+        self.explain_req = None
+        if result is None:
+            # No automatic retry (this runs at 10 Hz): the next position or level change retries.
+            self.panel.set_explanation(error or "Explanation failed.", status=True)
+            return
+        self._show_explanation(result)
+
+    def _show_explanation(self, result: Explanation) -> None:
+        source = "cached" if result.cached else f"{result.seconds:.1f}s"
+        log.info("explanation (%s, %s): %s", self.level.key, source, result.text)
+        if self.board is not None:
+            self.explanations.append((self.board.fen(), self.level.key, result))
+        self.panel.set_explanation(
+            result.text, tooltip=f"Facts given to {result.model}:\n{self._facts_text}"
+        )
+
+    def set_level(self, key: str) -> None:
+        self.level = get_level(key)
+        self.settings.skill_level = self.level.key
+        self.settings.level_chosen = True
+        save_settings(self.settings)
+        self._explained = None
+        self.explain_req = None
+        self._show_analysis()
+        self._refresh_arrows()
+        self._maybe_explain()
 
     def on_engine_error(self, message: str) -> None:
         log.error("%s", message)
@@ -374,9 +527,11 @@ class TrainerApp(QObject):
         self.reading_fen = None
         self.board = None
         self.analysis = None
+        self.suggestion = None
         self.req_id = None
         self.overlay.clear()
         self.panel.clear_analysis()
+        self._reset_explanation()
 
     # -- recording ---------------------------------------------------------------------------
 

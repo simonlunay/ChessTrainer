@@ -14,13 +14,17 @@ settings); assets/eval data in `data/` (mostly git-ignored).
 - Clean, typed (mypy --strict), tested code; ruff (line length 100).
 - The user commits themselves; don't commit unless asked.
 - Concise summaries with honest numbers, including failures.
+- **Never send keystrokes or mouse input, or open windows on the user's screen, for testing
+  without asking first** (this phase and every later one). That includes the on-screen
+  self-tests (`live_selftest.py`, `overlay_selftest.py`, `browser_check.py`) and launching the
+  app; use `QT_QPA_PLATFORM=offscreen` for checks that don't need the real screen.
 
 ## Commands
 `uv` is installed via `pip --user` and is **not on PATH**: use `python -m uv ...`
 (or `.venv/Scripts/python ...` directly).
 ```
 python -m uv sync                                   # CUDA torch from the cu126 index
-python -m uv run pytest                             # 78 tests (engine test skips w/o Stockfish)
+python -m uv run pytest                             # 101 tests (engine test skips w/o Stockfish)
 .venv/Scripts/ruff format src tests scripts && .venv/Scripts/ruff check src tests scripts
 .venv/Scripts/mypy src
 python -m uv run python scripts/download_assets.py  # Lichess piece sets + board textures
@@ -32,22 +36,26 @@ python -m uv run python scripts/live_selftest.py    # shows a real game on scree
 python -m uv run chesstrainer [--demo|--record-gif S|--grid|--calibrate|--select|--seconds S]
 python -m uv run python scripts/overlay_selftest.py # phase 3: latency + alignment -> data/eval/phase3_report.txt
 python -m uv run python scripts/browser_check.py    # phase 3 on lichess in a throwaway Chrome window
+python -m uv run python scripts/eval_phase4.py [--effort low|medium]  # -> data/eval/phase4_report.txt
 ```
+`eval_phase4.py` makes ~150 explanation calls (Haiku, ~$0.05) + ~150 judge calls (Opus 5.5,
+~$1.80) per run: ask before running it again.
 The self-tests take over part of the screen for ~1-2 min; the user may be using the PC at the same
 time (never send global keystrokes; `browser_check.py` posts keys to its own Chrome window only).
 Stockfish: found via `Settings.engine_path`, `STOCKFISH_PATH` (env/`.env`), PATH, or `stockfish*`
 exe in `data/engine/` or `%APPDATA%\ChessTrainer\engine\` (sf 19 "x86-64-universal" is in
 `data/engine/`, git-ignored). Missing -> setup message (panel + stderr), app keeps running.
-API key: `ANTHROPIC_API_KEY` in `.env` (never hardcode).
+API key: `ANTHROPIC_API_KEY` in the project `.env` or `%APPDATA%\ChessTrainer\.env` (git-ignored,
+never hardcode; `settings/env.py`). Missing -> explanations off with a message, app keeps running.
 User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overrides; tests use it).
 
 ## Plan and status
 1. **DONE** Setup, synthetic data generator, CNN + eval.
 2. **DONE** Board detection + recognition → FEN from live capture.
 3. **DONE** Stockfish (background thread, MultiPV 3, stale searches stopped) + click-through
-   overlay arrows aligned to the board, side panel (eval bar, 3 lines, status, controls; the
-   explanation/level areas are phase-4 placeholders), GIF recording.
-4. Skill levels (first-launch prompt, saved, changeable; all level behaviour in `levels.yaml`):
+   overlay arrows aligned to the board, side panel (eval bar, 3 lines, status, controls), GIF
+   recording.
+4. **DONE** Skill levels (first-launch prompt, saved, changeable; all level behaviour in `levels.yaml`):
    Beginner <800, Novice 800–1200, Intermediate 1200–1600, Advanced 1600–2000, Expert 2000+.
    Candidates shown 1/2/3+; practical-move preference at Beginner/Novice (simpler move within a
    small eval margin, noting the engine's top move is slightly better); level-scaled review
@@ -112,6 +120,39 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
 - **Demo GIFs**: panel "Record GIF" button or `--record-gif SECONDS`; turns capture hiding off
   for the overlay/panel while recording, writes `%USERPROFILE%\Videos\ChessTrainer\*.gif`
   (board + panel if adjacent). `--demo` turns capture hiding off for the whole session.
+- **Levels** (`levels.py` + `levels.yaml`, the only place level behaviour lives): candidates,
+  practical margin, review thresholds (`Level.classify_loss`, for phase 6), openings and opening
+  depth (phase 5), explanation style (sentences, style text, PV plies, numbers or words).
+  `Settings.skill_level` default "beginner" (user is ~400 Elo); `level_chosen` False -> modal
+  `overlay/level_dialog.py` on first launch (Beginner preselected); panel combo box changes it.
+- **Practical move** (`explain/practical.py`): Beginner (60 cp) / Novice (35 cp): a candidate
+  within the margin whose simplicity score is >= 2 higher replaces the top move as rank 1 (green
+  arrow); the panel notes the top move is slightly better. Simplicity: +3 capture winning by
+  SEE, +2 mate, +1 castling / developing a minor piece (move <= 15), -3 moved piece left en
+  prise, -1 king walk with queens on. Engine always runs MultiPV 3; display is cut to the level.
+- **Facts** (`explain/facts.py`, helpers + own SEE in `board_tools.py`): move/capture/castling/
+  promotion/en passant, check + legal replies, mate, eval in words (+number at Intermediate+),
+  top-move note for practical choices, alternatives (Intermediate+), material with piece
+  breakdown, line cut at a quiet point (`_quiet_end`: pv_plies, then extended while a capture is
+  pending), captures in order, best reply + what it attacks, threats stopped/created (null-move
+  SEE), attacks/forks/en prise of the moved piece, discovered attacks, pins (relative only if
+  the piece behind is worth more than the pinner or undefended), skewers, development, castling
+  rights, centre, king centralisation, opened lines, open files, passed pawns, doubled/isolated
+  pawns and bishop pair at the end of the line, game phase. Each fact = tag + plain sentence.
+- **Explanations** (`explain/prompt.py`, `explainer.py`): only facts + move + level are sent
+  (no FEN). System prompt bans unsupported judgements/purposes, upgraded strength words and
+  meta-talk. `Settings.explain_model` "claude-haiku-5-5", `explain_effort` "medium" (see
+  results), max_tokens 2000, no temperature (Haiku 5.5 rejects it). SQLite cache
+  `%APPDATA%\ChessTrainer\explanations.sqlite`, key = PROMPT_VERSION + FEN (no move counters) +
+  move + level + model. `ExplainWorker` thread, latest-wins, request ids. App trigger
+  (`TrainerApp._maybe_explain`, called from engine updates, snapshots and a timer): position
+  unchanged for `explain_delay_s` (1.5) AND depth >= `explain_min_depth` (16) or search done AND
+  not pending; once per (FEN, move, level); errors are not retried until the position or level
+  changes (it runs at 10 Hz). Typed API errors -> readable panel messages (no key, bad key,
+  out of credits, model not found, rate limit, offline). Tooltip shows the facts.
+- **Grounding check** (`explain/grounding.py`): literal checker for squares, moves, piece-on-
+  square, concepts (tag map), numbers and verdict words not in the facts; the eval pairs it with
+  an Opus 5.5 judge that lists claims and marks each supported/unsupported (JSON schema output).
 
 ## Results so far
 - Phase 1 classifier: per-square 99.61% val, 99.88% held-out styles, 98.1% real renders.
@@ -126,6 +167,18 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   rest is detection); window moved -> arrows back 240-400 ms. Real lichess in Chrome: 22/22 moves
   got arrows, key press -> arrows median 386 ms (includes lichess's ~250 ms animation; 17/22 under
   500 ms), alignment within 2 px vs board found by square colours.
+- Phase 4 (`data/eval/phase4_report.txt`; 25 curated positions + the 5 distinct positions read
+  from the user's screenshots, x 5 levels = 150 explanations, Stockfish depth 18). Share of
+  explanations with >= 1 claim not in the facts, judge (Opus 5.5) / either check: effort medium
+  7-9% / 9-11% (two runs; unsupported claims ~1% of ~930), effort low 22-25% / 23-29% (claims
+  4-5%; `phase4_report_effort_low.txt`). Final full medium run per level: Beginner 7%, Novice
+  10%, Intermediate 10%, Advanced 7%, Expert 3%; real screenshots 0/25. Latency median 3.0 s /
+  p90 6.5 s (medium) vs 1.2 s / 2.6 s (low); ~1000 input + ~520 output tokens, ~$0.0004 per
+  explanation. Manual audit of the 13 flags in that run: 6 wrong (4 from a doubled-pawn fact
+  measured mid-trade, fixed afterwards; the 83 explanations re-run after the fix had 5/83 judge
+  flags, `phase4_report_after_fix_partial.txt`), 7 unstated-but-harmless inferences or wording.
+  Prompt v1 (before the fact/prompt fixes) was 67% at low effort. Lengths 1.7-2.4 sentences on
+  average, max 3.
 
 ## Known limitations
 - Unusual chess.com piece sets ("8-bit", "light") misclassify; fix = more piece styles in training.
@@ -139,13 +192,15 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   unconfirmed whether that is an app problem. Move -> arrows from a key press exceeds 500 ms on
   ~1 in 4 lichess moves because of the site's move animation (the app waits for 2 equal frames).
 - The `--record-gif` / Record button path is unit-tested (GIF writing) but was not exercised live.
-  Live self-test: 23/23 exact FENs (incl. castling, en passant), ~11 ms/frame median.
-- Phase 3 (`data/eval/phase3_report.txt`, `phase3_browser.txt`; 150% display, SF19 4 threads):
-  self-test on lichess renders: 23/23 positions, new position -> arrows median 226 ms / max
-  259 ms (22/22 under 500 ms), stale arrows hidden median 105 ms; dots on square centres within
-  2.4 px (<=3.1% of a square) incl. after moves/resizes, drawing vs detected grid <=0.22 px (the
-  rest is detection); window moved -> arrows back 240-400 ms. Real lichess in Chrome: 22/22 moves
-  got arrows, key press -> arrows median 386 ms (includes lichess's ~250 ms animation; 17/22 under
-  500 ms), alignment within 2 px vs board found by square colours.
- + 11 user screenshots; more real in-the-wild
-  screenshots (add to `data/real/labels.csv`: file,fen,white_bottom) would strengthen evals.
+- More real in-the-wild screenshots (add to `data/real/labels.csv`: file,fen,white_bottom) would
+  strengthen evals.
+- Phase 4: the app's explanation flow (level dialog, panel, stable-position trigger) is tested
+  offscreen with a fake Claude client, not live on screen (rule: ask first). About 1 in 12
+  explanations still adds something not in the facts, mostly causal glue ("because X, Y") or
+  imprecise wording, occasionally a wrong inference ("the queen checks along the e-file" when it
+  is the rank). The judge is strict and is itself an LLM; its flags were audited by hand for one
+  run only. Run-to-run noise is about +-5 points on the flag rate.
+- The Anthropic account ran out of credits during the last eval run (2026-10-13, after ~$13 of
+  eval calls, mostly the Opus judge); explanations show "out of credits" until it is topped up.
+- Positional facts are basic (no outposts, king safety beyond castling, space or plans); the
+  model is told not to invent them, so quiet moves get plain "what it does + evaluation" texts.
