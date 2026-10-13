@@ -1,0 +1,113 @@
+# ChessTrainer
+
+A desktop chess coach that works on top of **any** chess board on your screen. It reads the
+position from a screen capture, draws the engine's best move as an arrow, explains it in plain
+English at your skill level, and runs an opening trainer.
+
+![demo](docs/demo.gif) <!-- placeholder: record once the overlay lands (phase 3) -->
+
+## Status
+
+| Phase | Scope | State |
+|---|---|---|
+| 1 | Project setup, synthetic data generator, CNN training + evaluation | **done** |
+| 2 | Board detection + piece recognition → FEN from a live screen | next |
+| 3 | Stockfish integration + overlay arrows | |
+| 4 | Skill levels + grounded LLM explanations | |
+| 5 | Opening trainer (guided, practice) | |
+| 6 | Review mode, hotkeys, PyInstaller packaging | |
+
+## Setup
+
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/) (`pip install uv`).
+
+```powershell
+uv sync                      # creates .venv; installs CUDA PyTorch on Windows/Linux
+uv run pytest                # tests
+```
+
+`pyproject.toml` pulls PyTorch from the CUDA 12.6 wheel index. On a machine without an NVIDIA
+GPU it still works (the CUDA wheels fall back to CPU), it is just slower to train.
+
+### Stockfish (needed from phase 3)
+
+Download the binary for your platform from <https://stockfishchess.org/download/>
+(Windows: the `x86-64-avx2` build suits most modern CPUs), extract it, and either put it on your
+`PATH` or set `STOCKFISH_PATH` in `.env` to the full path of the `.exe`.
+
+### Anthropic API key (needed from phase 4)
+
+Create `.env` in the project root (it is git-ignored):
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+## Training the piece classifier
+
+```powershell
+uv run python scripts/download_assets.py   # piece sets + board textures -> data/assets/
+uv run python scripts/preview_synth.py     # optional: eyeball samples in data/preview/
+uv run python scripts/fetch_real_eval.py   # optional: real-site eval boards -> data/real/
+uv run python -m chesstrainer.vision.train # ~15 min on an RTX 3060
+uv run python -m chesstrainer.vision.train --eval-only   # re-run the evaluation
+```
+
+Output: `data/models/square_classifier.pt`, plus `eval_report.txt` and `metrics.json`.
+
+### How the data is made
+
+`vision/synth.py` renders random **legal** positions (random games with a capture bias, so
+endgames are covered) using:
+
+- **25 piece sets** from Lichess (free licences only; abstract/novelty sets excluded),
+- **board themes**: lichess/chess.com palettes, random colour pairs, and 19 Lichess board
+  textures (wood, marble, ...),
+- **UI clutter**: last-move and selection tints, check glow, legal-move dots/rings, hover
+  outlines, coordinates inside the edge squares, arrows, page background and frames,
+- **degradation**: non-integer rescaling (browser zoom/HiDPI), blur, JPEG, gamma/contrast/
+  white-balance/saturation shifts, noise,
+- **detection error**: squares are cut with `geometry.split_board` (the same function used at
+  runtime) from a deliberately imperfect bounding box (±12% of a square per edge, plus ±4%
+  per square).
+
+Training streams fresh samples from 10 worker processes, so no image is seen twice.
+
+### Evaluation sets
+
+| Set | What it measures |
+|---|---|
+| `val` | Same styles as training, unseen positions/augmentations (300 boards). |
+| `heldout` | Piece sets (merida, staunty, fantasy), textures and palettes **never used in training** (300 boards). |
+| `real` | Boards rendered by lichess.org and chess.com's own servers (60 boards, 16 chess.com piece sets; none are in the training data). |
+
+Reported per set: per-square accuracy, full-board accuracy (all 64 squares right), per-class
+precision/recall, and the most common confusions.
+
+**Your own screenshots**: put tightly cropped board images in `data/real/` and add rows to
+`data/real/labels.csv` (`file,fen,white_bottom`; the FEN only needs the piece-placement field).
+
+## Licences
+
+Piece sets and board textures are downloaded from
+[lichess-org/lila](https://github.com/lichess-org/lila) at training time and are not
+redistributed. Their licences (GPL, AGPL, MIT, Apache, CC0, CC BY, CC BY-NC-SA) are listed in
+`src/chesstrainer/vision/assets.py` and in lila's `COPYING.md`. The CC BY-NC-SA sets mean the
+trained weights are for **non-commercial** use. Drop those sets from `PIECE_SETS` before
+retraining if that matters.
+
+## Layout
+
+```
+src/chesstrainer/
+  capture/     screen capture (phase 2)
+  vision/      assets, synthetic generator, geometry, CNN, training, evaluation
+  engine/      Stockfish (phase 3)
+  explain/     grounded facts + Claude explanations (phase 4)
+  openings/    opening trainer (phase 5)
+  overlay/     PyQt6 overlay and side panel (phase 3)
+  settings/    skill levels, levels.yaml (phase 4)
+data/          downloaded assets, eval sets, model checkpoints (mostly git-ignored)
+scripts/       asset download, previews, real-eval fetch
+tests/
+```

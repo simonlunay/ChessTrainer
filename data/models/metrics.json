@@ -1,0 +1,8 @@
+{
+  "val_square_accuracy": 0.99609375,
+  "heldout_square_accuracy": 0.99875,
+  "real_square_accuracy": 0.9776041666666667,
+  "val_board_accuracy": 0.9666666666666667,
+  "heldout_board_accuracy": 0.93,
+  "real_board_accuracy": 0.85
+}
