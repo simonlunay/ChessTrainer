@@ -10,8 +10,7 @@
 [![Latest release](https://img.shields.io/github/v/release/simonlunay/ChessTrainer?include_prereleases)](https://github.com/simonlunay/ChessTrainer/releases/latest)
 ![Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)
 
-<!-- PLACEHOLDER (demo GIF): save as docs/media/demo.gif. See "Media to capture" in the PR notes. -->
-![ChessTrainer demo: a lichess game with best-move arrows drawn on the board and the side panel explaining the move](docs/media/demo.gif)
+![ChessTrainer demo: a chess.com bot game in the opening trainer, with the book move and then the engine's best moves drawn as arrows on the board next to the side panel](docs/media/demo.gif)
 
 </div>
 
@@ -52,12 +51,12 @@ Windows may show "Windows protected your PC" because the exe is not code-signed.
 | **Global hotkeys** | Arrows, explanations, pause, flip and mode, even while the browser has focus. |
 | **Private by default** | Hidden from screen capture. Explanations off means zero API calls. Your key never leaves your machine except to Anthropic. |
 
-<!-- PLACEHOLDER (screenshots): save as docs/media/overlay.png, explanation.png, trainer.png, review.png -->
-| Overlay | Explanation |
-|---|---|
-| ![Best-move arrows on a lichess board with the side panel](docs/media/overlay.png) | ![Side panel explaining a move at Beginner level](docs/media/explanation.png) |
-| **Opening trainer** | **Review summary** |
-| ![Opening trainer in guided mode with the book move arrow](docs/media/trainer.png) | ![Game review window with mistakes marked and the summary](docs/media/review.png) |
+<p align="center">
+  <img src="docs/media/bot-win.png" width="420"
+       alt="Chess.com end screen: You Beat Li! against the 2000-rated bot">
+</p>
+<p align="center"><sub>A win against chess.com's 2000-rated bot with ChessTrainer running. The
+overlay hides itself from screen capture, so only the board shows here.</sub></p>
 
 ## How it works
 

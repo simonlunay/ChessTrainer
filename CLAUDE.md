@@ -271,7 +271,7 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   bundle, then `%APPDATA%\ChessTrainer\models`; download there when frozen, to data/models in a
   checkout; `CHESSTRAINER_WEIGHTS_URL` overrides). `api_key_prompted` setting: first-run level
   dialog has the key field; existing installs without a key get the key dialog once.
-  Media placeholders listed in `docs/media/README.md`.
+  README media (`docs/media/demo.gif`, `bot-win.png`) described in `docs/media/README.md`.
 
 ## Results so far
 - Phase 1 classifier: per-square 99.61% val, 99.88% held-out styles, 98.1% real renders.
@@ -341,7 +341,7 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   to re-find the board, both while other windows were covering/uncovering the test window;
   unconfirmed whether that is an app problem. Move -> arrows from a key press exceeds 500 ms on
   ~1 in 4 lichess moves because of the site's move animation (the app waits for 2 equal frames).
-- The `--record-gif` / Record button path is unit-tested (GIF writing) but was not exercised live.
+- The Record GIF button was used live by the user on 2026-10-14 (`docs/media/demo.gif`, 720x480, 45 frames, 0.7 MB); `--record-gif` itself still only unit-tested.
 - More real in-the-wild screenshots (add to `data/real/labels.csv`: file,fen,white_bottom) would
   strengthen evals.
 - Phase 4: the app's explanation flow (level dialog, panel, stable-position trigger) is tested
@@ -369,4 +369,4 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   name it differently. Explanations start only after all selected games are analysed. Lichess
   returns every speed (bullet included); the Chess.com fetch looks back at most 6 monthly
   archives. Builds are GPLv3-bound (PyQt6, python-chess, Stockfish); the repo is GPL-3.0
-  (phase 7). README media are placeholders under `docs/media/` (list in its README.md). Global hotkeys are Windows-only.
+  (phase 7). Global hotkeys are Windows-only.
