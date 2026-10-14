@@ -3,11 +3,12 @@
 #   python -m uv run python scripts/build_exe.py      # builds + audits; use that, not this directly
 #
 # Ships: the chesstrainer package with its YAML/TSV data, the ONNX classifier trained without the
-# CC BY-NC-SA piece sets (no piece images at all), and Stockfish (GPLv3, with its source and
-# licence). Never ships: PyTorch, training assets, eval data, .env files or API keys.
+# CC BY-NC-SA piece sets (no piece images at all), Stockfish (GPLv3, with its source and
+# licence), LICENSE and THIRD_PARTY_NOTICES.md. Never ships: PyTorch, training assets, eval data,
+# .env files or API keys.
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parent
 MODEL = ROOT / "data" / "models" / "square_classifier_free.onnx"
@@ -17,7 +18,10 @@ datas = collect_data_files(
     "chesstrainer", includes=["**/*.yaml", "openings/data/*.tsv", "openings/data/*.txt"]
 )
 datas += [(str(MODEL), "models"), (str(MODEL.with_suffix(".json")), "models")]
-datas += [(str(ROOT / "packaging" / "THIRD_PARTY_LICENSES.txt"), ".")]
+datas += [(str(ROOT / "LICENSE"), "."), (str(ROOT / "THIRD_PARTY_NOTICES.md"), ".")]
+# keyring finds its OS backends (Windows Credential Manager) through its entry points.
+datas += copy_metadata("keyring")
+HIDDEN = collect_submodules("keyring.backends")
 if ENGINE.is_dir():
     for f in ENGINE.rglob("*"):
         if f.is_file():
@@ -36,6 +40,7 @@ a = Analysis(
     [str(ROOT / "packaging" / "launcher.py")],
     pathex=[str(ROOT / "src")],
     datas=datas,
+    hiddenimports=HIDDEN,
     excludes=EXCLUDES,
     noarchive=False,
 )

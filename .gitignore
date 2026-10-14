@@ -1,25 +1,59 @@
+# Python / tooling
 .venv/
+venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Secrets (API keys live in the OS credential store or %APPDATA%\ChessTrainer\.env)
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Build output (PyInstaller) and release archives
+build/
+dist/
+release/
+*.zip
+
+# Model weights: published as GitHub Release assets, downloaded on demand
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.safetensors
 
 # Generated / downloaded data
 data/assets/
 data/eval/
 data/real/
 data/preview/
-data/models/*.pt
-data/train_log.txt
-data/engine/
 data/demo/
-build/
-dist/
-
-# Phase 6 build logs
+data/engine/
 data/train_log*.txt
 data/build_log.txt
-dist/
-build/
+
+# Logs, caches and local databases (explanation cache, practice cards)
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+explanations.sqlite*
+openings.sqlite*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

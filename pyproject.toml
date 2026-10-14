@@ -3,6 +3,8 @@ name = "chesstrainer"
 version = "0.1.0"
 description = "Screen-overlay chess trainer: best-move arrows, grounded explanations, and an opening trainer."
 readme = "README.md"
+license = "GPL-3.0-only"
+authors = [{ name = "simonlunay" }]
 requires-python = ">=3.11"
 dependencies = [
     "chess>=1.11",
@@ -17,7 +19,12 @@ dependencies = [
     "python-dotenv>=1.0",
     "anthropic>=0.40",
     "tqdm>=4.66",
+    "keyring>=25",
 ]
+
+[project.urls]
+Homepage = "https://github.com/simonlunay/ChessTrainer"
+Issues = "https://github.com/simonlunay/ChessTrainer/issues"
 
 [project.scripts]
 chesstrainer = "chesstrainer.__main__:main"
@@ -51,6 +58,7 @@ explicit = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q"
 
 [tool.ruff]

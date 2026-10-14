@@ -9,9 +9,11 @@ draw the icon, run PyInstaller (``packaging/chesstrainer.spec``), then audit ``d
   - no ``.env`` file, and nothing that looks like an Anthropic key (``sk-ant-`` + 20 key
     characters) or the configured key's value in any file, in any module of the compressed
     Python archive inside the exe, or inside any .zip (the key is never printed);
-  - the exe's headless ``--self-check`` passes (no window, no capture, no hotkeys), with
+  - LICENSE, THIRD_PARTY_NOTICES.md and Stockfish's licence are bundled;
+  - the exe's headless ``--self-check`` passes (no window, no capture, no hotkeys) and finds the
+    Windows Credential Manager through keyring, with
     CHESSTRAINER_HOME pointed at an empty temporary folder so no user .env can be read.
-Writes ``data/eval/phase6_build.txt``.
+Writes ``data/eval/build_report.txt``.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ DIST = ROOT / "dist" / "ChessTrainer"
 SPEC = ROOT / "packaging" / "chesstrainer.spec"
 ICON = ROOT / "packaging" / "chesstrainer.ico"
 MODELS = ROOT / "data" / "models"
-REPORT = ROOT / "data" / "eval" / "phase6_build.txt"
+REPORT = ROOT / "data" / "eval" / "build_report.txt"
 
 
 def ensure_onnx() -> None:
@@ -130,6 +132,11 @@ def audit() -> list[str]:
         "square_classifier_free.pt"
     ):
         problems.append("bundled model was not exported from square_classifier_free.pt")
+    for name in ("LICENSE", "THIRD_PARTY_NOTICES.md"):
+        if not (DIST / "_internal" / name).is_file():
+            problems.append(f"{name} not bundled")
+    if not (DIST / "_internal" / "engine" / "stockfish" / "Copying.txt").is_file():
+        problems.append("Stockfish licence (Copying.txt) not bundled")
     key = configured_key()
     blobs = [(str(f.relative_to(DIST)), f.read_bytes()) for f in files]
     blobs += python_archive(DIST / "ChessTrainer.exe")
@@ -201,6 +208,10 @@ def main() -> None:
     seconds = 0.0 if args.skip_build else build()
     problems = audit()
     check = self_check()
+    api = check.get("api_key")
+    store = api.get("credential_store") if isinstance(api, dict) else None
+    if store != "Windows Credential Manager":
+        problems.append(f"frozen app has no usable credential store (got {store!r})")
     engine_dir = DIST / "_internal" / "engine"
     lines = [
         f"dist: {DIST}",

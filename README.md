@@ -1,244 +1,287 @@
+<div align="center">
+
 # ChessTrainer
 
-A desktop chess coach for Windows that works on top of **any** chess board on your screen
-(lichess, chess.com, a YouTube video, a PDF...). It reads the position from a screen capture,
-draws Stockfish's best move as an arrow on the board, explains the move in plain English at
-your skill level, trains your openings, and reviews your games to show you what to work on.
+**A chess coach that sits on top of any board on your screen: best-move arrows, explanations that stick to the facts, an opening trainer and game reviews.**
 
-![ChessTrainer demo](docs/demo.gif)
-<!-- Demo GIF goes here: record with the panel's "Record GIF" button or
-     `chesstrainer --record-gif 20`, then save it as docs/demo.gif. -->
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![CI](https://github.com/simonlunay/ChessTrainer/actions/workflows/ci.yml/badge.svg)](https://github.com/simonlunay/ChessTrainer/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Latest release](https://img.shields.io/github/v/release/simonlunay/ChessTrainer?include_prereleases)](https://github.com/simonlunay/ChessTrainer/releases/latest)
+![Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%2F11-lightgrey.svg)
 
-## What it does
+<!-- PLACEHOLDER (demo GIF): save as docs/media/demo.gif. See "Media to capture" in the PR notes. -->
+![ChessTrainer demo: a lichess game with best-move arrows drawn on the board and the side panel explaining the move](docs/media/demo.gif)
 
-- **Reads any board on screen.** A small CNN classifies each square; the board is found with
-  classic computer vision (edges, lattice fit, checkerboard check). Works with any site and
-  piece style, flipped boards, highlighted squares and arrows drawn by the site.
-- **Best-move overlay.** A click-through window draws the engine's moves right on the board,
-  plus a side panel with an eval bar, the top lines and the explanation.
-- **Explanations that stick to the facts.** python-chess and Stockfish compute facts about the
-  move (captures, threats, forks, pins, material over the line, ...); only those facts go to
-  Claude, and every answer is checked against them before it is shown.
-- **Five skill levels** (Beginner < 800 to Expert 2000+): how many moves are shown, whether a
-  simpler "practical" move is preferred, explanation style and the review thresholds.
-- **Opening trainer.** Pick any opening from the Lichess openings dataset; guided mode shows
-  and explains the book move, practice mode quizzes you with spaced repetition. Deviations are
-  named and graded.
-- **Game review.** Paste a PGN or load your recent Lichess / Chess.com games by username. Your
-  mistakes are marked using your level's thresholds, the biggest ones are explained, and a
-  summary tells you which mistake types to work on (hanging pieces, missed captures, ...).
-- **System-wide hotkeys** for showing/hiding the arrows, explanations on/off, pause, flipping
-  the board and switching modes, even while the browser has focus.
-- **Explanations are optional.** With them off (or no API key) the app makes no API calls at
-  all; the arrows, engine lines, trainer and reviews keep working.
+</div>
 
-## Architecture
+ChessTrainer reads the position from a screen capture, runs Stockfish, and draws the best move
+right on the board. It works on lichess, chess.com, a YouTube video or a PDF. No browser
+extension, no site integration.
 
-```
- screen ──mss──▶ BoardTracker ──▶ PieceRecognizer ──▶ PositionTracker ──▶ Snapshot
-                 (vision/detect)  (CNN: PyTorch in dev,  (legality repair,      │
-                                   ONNX/OpenCV shipped)   move inference)        ▼
-                                                                         TrainerApp (Qt)
-   ┌──────────────────────────────────────────────────────────────────────┤
-   ▼                          ▼                        ▼                  ▼
- AnalysisEngine          OpeningTrainer          ReviewWindow        GlobalHotkeys
- (Stockfish, MultiPV,    (book graph, guided /   (PGN / Lichess /    (RegisterHotKey
-  stale searches          practice, SM-2 cards)   Chess.com, engine   thread)
-  cancelled)                    │                 pass, mistake types)
-   │                            │                        │
-   ▼                            ▼                        ▼
- facts.py (python-chess) ──▶ Claude Haiku ──▶ grounding check ──▶ panel / review window
- only computed facts are sent; claims not in the facts trigger one rewrite, else the facts are shown
-   │
-   ▼
- BoardOverlay (click-through, DPI-exact, hidden from screen capture) + SidePanel
-```
+> **Fair play.** ChessTrainer is built for analysis boards, games against bots, and reviewing
+> your own games. Do not use it in live rated games. That is cheating on every site, and it
+> will get your account closed.
 
-| Package | Role |
+## Quick start
+
+1. **Download** `ChessTrainer-<version>-windows-x64.zip` from
+   [Releases](https://github.com/simonlunay/ChessTrainer/releases/latest), unzip it anywhere and
+   run `ChessTrainer.exe`.
+2. **Stockfish is included** (Stockfish 19). Nothing to install. Pick your level in the first
+   dialog.
+3. **Optional: explanations.** Paste an [Anthropic API key](https://console.anthropic.com/settings/keys)
+   in the same dialog (or later with the panel's **API key…** button). It is stored in Windows
+   Credential Manager. Without a key everything else works.
+
+Open a game in any app. The green arrow is the move to play.
+
+Windows may show "Windows protected your PC" because the exe is not code-signed. Click
+**More info → Run anyway**.
+
+## Features
+
+| | |
 |---|---|
-| `vision/` | synthetic data generator, CNN + training, ONNX export, board detection, orientation, position tracking |
-| `engine/` | Stockfish discovery and the background MultiPV analysis thread |
-| `explain/` | facts about a move, practical-move choice, prompt, explainer + cache, grounding check |
-| `openings/` | opening book (Lichess dataset), curated repertoire, trainer session, spaced repetition |
-| `review/` | PGN parsing, Lichess / Chess.com API clients, engine pass, mistake types, summary |
-| `overlay/` | Qt app, overlay, side panel, dialogs, review window, global hotkeys |
-| `levels.yaml` | everything that depends on the skill level, in one place |
+| **Reads any board** | A small CNN classifies all 64 squares. Any site, any theme, flipped boards, highlights and arrows. |
+| **Best-move overlay** | Click-through arrows aligned to the pixel, an eval bar and the top lines. New position to arrows in ~230 ms. |
+| **Grounded explanations** | Plain English at your level, written only from facts computed by python-chess and Stockfish, then fact-checked. |
+| **Five skill levels** | Beginner (<800) to Expert (2000+): how many moves you see, simpler practical moves, explanation style. |
+| **Opening trainer** | Any opening from the Lichess dataset. Guided mode explains each book move; practice mode drills you with spaced repetition. |
+| **Game review** | Paste a PGN or load your Lichess / Chess.com games. Mistakes graded for your level, typed, explained, summarized. |
+| **Global hotkeys** | Arrows, explanations, pause, flip and mode, even while the browser has focus. |
+| **Private by default** | Hidden from screen capture. Explanations off means zero API calls. Your key never leaves your machine except to Anthropic. |
+
+<!-- PLACEHOLDER (screenshots): save as docs/media/overlay.png, explanation.png, trainer.png, review.png -->
+| Overlay | Explanation |
+|---|---|
+| ![Best-move arrows on a lichess board with the side panel](docs/media/overlay.png) | ![Side panel explaining a move at Beginner level](docs/media/explanation.png) |
+| **Opening trainer** | **Review summary** |
+| ![Opening trainer in guided mode with the book move arrow](docs/media/trainer.png) | ![Game review window with mistakes marked and the summary](docs/media/review.png) |
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Screen capture<br/>mss] --> B[Board detection<br/>OpenCV]
+    B --> C[Square classifier<br/>CNN, ONNX]
+    C --> D[Position + FEN<br/>legality repair]
+    D --> E[Stockfish<br/>MultiPV 3]
+    E --> F[Grounded facts<br/>python-chess]
+    F --> G[Claude Haiku<br/>explanation]
+    G --> H{Fact check}
+    H -- passes --> I[Overlay + panel]
+    H -- flagged: rewrite once --> G
+    H -- flagged twice --> J[Summary of the facts]
+    J --> I
+    E --> I
+```
+
+**Screen capture.** `mss` grabs the monitor at 10 fps. Once a board is found, only its
+neighbourhood is grabbed (~12 ms instead of ~45 ms for a 2560x1600 screen).
+
+**Board detection.** Edge contours, a lattice fit on edge projections, and a checkerboard colour
+check find the 8x8 grid. A tracker re-verifies the box each frame and re-finds a dragged window
+by template matching.
+
+**Square classifier.** A VGG-style CNN (585k parameters) labels each square as empty or one of 12
+pieces. It is trained only on synthetic boards: 10 free-licence piece sets, 17 textures, random
+palettes, site clutter and degradation. It ships as ONNX and runs on the CPU through OpenCV.
+
+**Position and FEN.** Impossible readings are repaired (two kings, pawns on the back rank). Each
+new frame is explained as no change, one or two legal moves, or a takeback, which gives the exact
+side to move, castling rights and en passant. A change must hold for 2 frames.
+
+**Stockfish.** Runs in a background thread with MultiPV 3. A new position stops the old search;
+stale results are dropped by request id.
+
+**Grounded facts.** python-chess computes what is true about the move: captures, checks, threats,
+forks, pins, skewers, discovered attacks, material over the line, pawn structure, development.
+
+**Explanation.** Only those facts, the move and your level go to Claude Haiku. Never the board.
+
+**Overlay.** A transparent click-through window covers the board, snapped to whole physical
+pixels, and is excluded from screen capture so the app never reads its own arrows.
+
+## Why it doesn't hallucinate
+
+LLMs are bad at reading chess positions. So the model never sees one.
+
+1. **Facts first.** python-chess and Stockfish compute every claim the explanation may make. Each
+   fact is a tag plus one plain sentence ("Nf3 attacks the pawn on e5").
+2. **Facts only.** The prompt contains the move, the level and the facts. The system prompt bans
+   claims not in the facts, upgraded strength words ("brilliant", "winning") and meta-talk.
+3. **Fact check.** A rule-based checker scans every answer for squares, moves, piece placements,
+   concepts, numbers and verdict words that are not in the facts.
+4. **Regenerate once, then fall back.** A flagged answer is rewritten once with the flagged claims
+   listed. If the rewrite is flagged too, the app shows a summary built from the facts themselves.
+
+Measured results:
+
+| Measure | Result |
+|---|---|
+| Explanations with any claim not in the facts (strict LLM judge, 150 explanations) | 7-9% before the live check |
+| Unsupported claims overall | ~1% of ~930 claims |
+| Live path, opening trainer (73 explanations) | 71 passed first time, 2 rewritten, 0 fell back |
+| Live path, game review (15 explanations) | 13 passed first time, 2 rewritten, 0 fell back |
+| Positions from real screenshots | 0 of 25 flagged |
+
+What remains is mostly causal glue ("because X, Y") or loose wording, not invented tactics.
 
 ## Results
 
-All numbers come from the eval scripts in `scripts/` (reports in `data/eval/`).
+All numbers come from the eval scripts in `scripts/`. Hardware: RTX 3060 laptop, 20-thread
+Intel CPU, 150% display scaling.
 
-### Phase 1: piece classifier (per-square accuracy)
+**Piece classifier** (per-square accuracy)
 
-| Set | Development model (25 piece sets) | Shipped model (free-licence sets only) |
+| Set | Dev model (25 sets) | Shipped model (free sets only) |
 |---|---|---|
-| Validation (training styles, unseen positions) | 99.61% | 99.03%* |
-| Held-out piece sets, textures and palettes | 99.88% | 99.59%* |
-| Real lichess.org / chess.com renders (71 boards) | 97.76% | 97.78% |
+| Validation | 99.61% | 99.03% |
+| Held-out piece sets, textures, palettes | 99.88% | 99.59% |
+| Real lichess / chess.com renders | 97.76% | 97.78% |
 
-\* These sets include the CC BY-NC-SA piece styles that the shipped model never saw in training.
-
-### Phase 2: board reading from the screen
+**Board reading** (exact positions)
 
 | Test | Result |
 |---|---|
-| My own screenshots (11) | 11/11 exact positions, orientation found automatically |
-| Lichess renders (20) | 20/20 |
-| Chess.com renders (40), automatic / given orientation | 27/40 / 33/40 (shipped model: 25/40 / 31/40) |
-| Synthetic full screens with decoys (200) | 199/200 boards found |
-| Live self-test (real game on screen) | 23/23 exact positions incl. castling and en passant, ~11 ms/frame |
+| Real user screenshots | 11/11, orientation found automatically |
+| Lichess renders | 20/20 |
+| Chess.com renders, auto / given orientation | 25/40 / 31/40 (shipped model) |
+| Live self-test, real game on screen | 23/23 incl. castling and en passant |
 
-### Phase 3: overlay speed and alignment (150% display scaling)
-
-| Measure | Result |
-|---|---|
-| New position on screen → arrows painted | median 226 ms, max 259 ms (22/22 under 500 ms) |
-| Real lichess in Chrome, key press → arrows | median 386 ms (includes the site's ~250 ms animation) |
-| Arrow alignment | within 2.4 px of the square centres (≤ 3.1% of a square) |
-| Board window moved → arrows back | 240-400 ms |
-
-### Phase 4: grounded explanations (150 explanations, 30 positions × 5 levels)
+**Speed and alignment**
 
 | Measure | Result |
 |---|---|
-| Explanations with ≥ 1 claim not in the facts (LLM judge) | 7-9% (effort medium), 22-25% (effort low) |
-| Unsupported claims overall | ~1% of ~930 claims |
-| Positions from my real screenshots | 0/25 flagged |
-| Latency / cost | median 3.0 s, ~$0.0004 per explanation (Claude Haiku) |
+| New position on screen to arrows | median 226 ms, max 259 ms |
+| Real lichess in Chrome, key press to arrows | median 386 ms (includes the site's ~250 ms animation) |
+| Arrow alignment | within 2.4 px of square centres |
+| Classifier, CPU only (ONNX, 20 threads / 1 thread) | 41 ms / 214 ms per board |
 
-### Phase 5: opening trainer (scripted, real Stockfish and Claude)
-
-| Measure | Result |
-|---|---|
-| Scripted scenarios (main lines, transpositions, deviations, takebacks, practice) | 15/15 exact expected events |
-| Explanations through the live path | 73: 71 passed the fact check first time, 2 rewritten once, 0 fell back |
-| Cost per run | ~$0.02 |
-
-### Phase 6: game review and packaging
+**Opening trainer and review**
 
 | Measure | Result |
 |---|---|
-| Real games reviewed (Lichess API: Maia bots' games; Chess.com API: Hikaru) + 3 sample PGNs | 10 games, side found by username in 7/7 fetched |
-| Engine pass | ~0.14 s per position (depth 14), a 40-move game in ~10 s |
-| Explanations of the biggest mistakes (two runs) | 15 new: 13 passed the fact check first time, 2 rewritten once, 0 fell back; ~$0.0006 each |
-| Packaged app | 379 MB folder (105 MB of it Stockfish), no PyTorch; audit found no API key, `.env`, training images or non-commercial piece sets; headless self-check of the exe passes |
-| Shipped classifier, ONNX via OpenCV vs PyTorch | 0 of 42,944 eval predictions differ |
+| Scripted trainer scenarios (transpositions, deviations, takebacks, practice) | 15/15 |
+| Real games reviewed (Lichess + Chess.com APIs, sample PGNs) | 10 games, ~0.14 s per position |
+| Packaged app | 379 MB folder, 194 MB zip, no PyTorch, audit clean |
 
-## Setup
+## Hotkeys
 
-### Option A: the packaged app
+| Hotkey | Action |
+|---|---|
+| Ctrl+Alt+O | Show / hide arrows |
+| Ctrl+Alt+E | Explanations on / off |
+| Ctrl+Alt+P | Pause / resume |
+| Ctrl+Alt+F | Flip the board |
+| Ctrl+Alt+M | Switch mode: analysis → opening trainer → game review |
 
-Build it once (below) and run `dist\ChessTrainer\ChessTrainer.exe`; no Python or terminal is
-needed to use it. It includes Stockfish 19 and the piece classifier. For explanations, put your
-Anthropic API key in `%APPDATA%\ChessTrainer\.env`:
+In the review window: ← / → step through moves, **N** jumps to your next mistake.
 
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
+## Settings
 
-### Option B: from source
+Most settings are in the side panel. Everything is saved in
+`%APPDATA%\ChessTrainer\settings.json`.
+
+| Key | Default | What it does |
+|---|---|---|
+| `skill_level` | `beginner` | `beginner`, `novice`, `intermediate`, `advanced`, `expert` |
+| `explanations` | `true` | Off = no API calls at all |
+| `explain_model` / `explain_effort` | `claude-haiku-5-5` / `medium` | Model and effort for explanations |
+| `explain_delay_s` | `1.5` | Position must be stable this long before it is explained |
+| `engine_path` | `null` | Your own Stockfish; `null` = bundled or `STOCKFISH_PATH` |
+| `engine_threads` / `engine_hash_mb` | `4` / `128` | Stockfish resources |
+| `engine_max_seconds` | `8.0` | Analysis time per position |
+| `capture_fps` / `monitor` | `10` / `1` | Capture rate and monitor (0 = all) |
+| `orientation` | `auto` | `auto`, `white` or `black` at the bottom |
+| `classifier_backend` / `device` | `auto` / `auto` | `onnx` or `torch`; `cpu` or `cuda` |
+| `hide_overlay_from_capture` | `true` | Keep the overlay out of screenshots and recordings |
+| `global_hotkeys` / `hotkeys` | `true` / `{}` | e.g. `{"flip": "Ctrl+Shift+F9"}`; `""` disables one |
+| `review_depth` / `review_explain_max` | `14` / `3` | Review engine depth; explained mistakes per game |
+
+Environment variables: `ANTHROPIC_API_KEY` (overrides the stored key), `STOCKFISH_PATH`,
+`CHESSTRAINER_HOME` (settings folder), `CHESSTRAINER_WEIGHTS_URL` (weights mirror).
+
+## FAQ
+
+**What does an explanation cost?** About $0.0003-0.0006 with Claude Haiku (measured), so $1 covers
+roughly 2,000. Repeated positions come from a local cache for free. You use your own key and
+Anthropic bills you directly.
+
+**Does it work offline?** Yes, except explanations and loading games by username. Board reading,
+Stockfish, the opening trainer and PGN review are fully local.
+
+**Which sites?** Any board on screen. Tested on lichess.org and chess.com renders and real
+screenshots. Unusual chess.com piece sets ("8-bit", "light") are the weak spot.
+
+**Do I need a GPU?** No. The shipped classifier runs on the CPU: 41 ms per board on a 20-thread
+laptop CPU, 214 ms on a single thread. The board is only re-classified when it changes.
+
+**Mac or Linux?** Not yet. Screen capture exclusion, hotkeys and the build are Windows-only.
+
+**Is my API key safe?** It is stored in Windows Credential Manager, never in settings.json, never
+logged, and only sent to Anthropic. A `.env` file in `%APPDATA%\ChessTrainer\` also works.
+
+## Build from source
 
 Requires Windows 10/11, Python 3.11+ and [uv](https://docs.astral.sh/uv/) (`pip install uv`).
 
 ```powershell
-python -m uv sync                                   # .venv with CUDA PyTorch (CPU works too)
-python -m uv run python scripts/download_assets.py  # piece sets + board textures (training only)
-python -m uv run python -m chesstrainer.vision.train            # dev model, ~13 min on an RTX 3060
-python -m uv run python -m chesstrainer.vision.train --free-only # shipped model (free-licence sets)
-python -m uv run python -m chesstrainer.vision.export_onnx      # -> square_classifier_free.onnx
-python -m uv run chesstrainer
+python -m uv sync                                # .venv (CUDA PyTorch for training; CPU works too)
+python -m uv run python -m chesstrainer.vision.weights   # shipped weights from the release
+python -m uv run chesstrainer                    # run the app
 ```
 
-**Stockfish**: download it from <https://stockfishchess.org/download/> and unzip it into
-`data/engine/` (or `%APPDATA%\ChessTrainer\engine\`), or set `STOCKFISH_PATH` in `.env`.
-Without it the app still starts and explains how to install it.
+Put Stockfish in `data/engine/` or set `STOCKFISH_PATH` ([download](https://stockfishchess.org/download/)).
+The weights are also fetched automatically on first launch.
 
-**API key** (optional): `ANTHROPIC_API_KEY=sk-ant-...` in `.env` in the project folder or in
-`%APPDATA%\ChessTrainer\`. Both are git-ignored and never bundled into the build.
-
-### Building the Windows app
+Train your own classifier, build the exe, and run the evals:
 
 ```powershell
-python -m uv run python scripts/build_exe.py
+python -m uv run python scripts/download_assets.py               # piece sets + textures (training only)
+python -m uv run python -m chesstrainer.vision.train --free-only # ~13 min on an RTX 3060
+python -m uv run python -m chesstrainer.vision.export_onnx       # -> square_classifier_free.onnx
+python -m uv run python scripts/build_exe.py                     # dist\ChessTrainer + audit + self-check
+python -m uv run python scripts/cpu_benchmark.py                 # CPU-only timing on real boards
+python -m uv run pytest                                          # 164 tests, offscreen
 ```
 
-PyInstaller builds `dist\ChessTrainer\` (one folder, no console window), then the script audits
-it: no PyTorch, no training images, no piece sets under a non-commercial licence, no `.env`, and
-nothing that looks like an API key anywhere (including inside the compressed Python archive). It
-finally runs the exe's headless `--self-check`. PyTorch is not shipped: the classifier runs as
-ONNX through OpenCV (identical predictions on all eval sets), which keeps the build small.
+## Known limitations
 
-## Using it
+- Rare chess.com piece sets ("8-bit", "light") misread. Fix: more styles in training.
+- Boards without coordinates in random or endgame positions can have ambiguous orientation.
+  Flip with Ctrl+Alt+F.
+- A position seen without history may guess the side to move. The panel flags it.
+- About 1 in 12 explanations adds a harmless unstated inference. Positional facts are basic
+  (no outposts or plans), so quiet moves get plain explanations.
+- Mistake types are heuristics over 8-ply lines.
+- The exe is not code-signed.
 
-| | |
-|---|---|
-| **Analysis** | Open a game in any app. The best move appears as a green arrow; the panel shows the eval bar, lines and explanation (hover it to see the facts it was written from). |
-| **Opening trainer** | Mode → Opening trainer → choose an opening and side (recommended ones for your level first), guided or practice. |
-| **Game review** | Mode → Game review. Paste PGN, or enter your Lichess / Chess.com username and load recent games. Select games → Review. Step with ← / →, **N** jumps to your next mistake. Red arrow = your move, green = Stockfish's. |
-| **Explanations on/off** | Panel checkbox, Ctrl+E (panel focused) or the global hotkey. Off = no API calls. |
+## Roadmap
 
-### Hotkeys (system-wide)
+- More piece styles and real screenshots in training and evals
+- Richer positional facts: outposts, king safety, space, plans
+- Explanations streaming in while a review is still running
+- Signed installer and auto-update
+- macOS and Linux capture and hotkeys
 
-| Hotkey | Action |
-|---|---|
-| Ctrl+Alt+O | show / hide the arrows |
-| Ctrl+Alt+E | explanations on / off |
-| Ctrl+Alt+P | pause / resume |
-| Ctrl+Alt+F | flip the board |
-| Ctrl+Alt+M | switch mode (analysis → opening trainer → game review) |
+## Contributing
 
-Change them in `%APPDATA%\ChessTrainer\settings.json` (`"hotkeys": {"flip": "Ctrl+Shift+F9"}`;
-an empty string disables one, `"global_hotkeys": false` disables all). A combination already
-taken by another program is skipped and listed in the panel's hotkey tooltip.
+Bug reports, screenshots of boards it misreads, and pull requests are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Tests and evals
+## Credits and licences
 
-```powershell
-python -m uv run pytest                                # unit + offscreen app tests
-python -m uv run python scripts/eval_phase2.py         # board reading
-python -m uv run python scripts/eval_phase5.py         # opening trainer (offscreen)
-python -m uv run python scripts/eval_phase6.py         # game review on real fetched games
-```
+ChessTrainer is licensed under the [GPL-3.0](LICENSE).
 
-The on-screen self-tests (`live_selftest.py`, `overlay_selftest.py`, `browser_check.py`) take
-over part of the screen for a minute or two.
+- [Stockfish](https://stockfishchess.org/) (GPL-3.0), bundled with its source
+- [python-chess](https://github.com/niklasf/python-chess) (GPL-3.0+) by Niklas Fiekas
+- [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) (GPL-3.0) and Qt 6 (LGPL-3.0)
+- [Lichess chess-openings](https://github.com/lichess-org/chess-openings) (CC0) for the opening book
+- Piece sets and board textures from [lila](https://github.com/lichess-org/lila), used only to
+  render training data and never redistributed. The shipped model uses free-licence sets only.
+- Explanations by [Claude](https://www.anthropic.com/claude) through the Anthropic API
 
-## How the classifier is trained
-
-`vision/synth.py` renders random legal positions with Lichess piece sets, board palettes and
-textures, site clutter (move highlights, check glow, legal-move dots, coordinates, arrows) and
-degradation (scaling, blur, JPEG, colour shifts), then cuts the squares with the same function
-used at runtime from a deliberately imperfect box. Training streams fresh samples, so no image
-is seen twice. Three piece sets, two textures and two palettes are held out to measure
-generalization.
-
-## Licences
-
-- Piece sets and board textures are downloaded from
-  [lichess-org/lila](https://github.com/lichess-org/lila) for training and are **not**
-  redistributed. The development model also uses CC BY-NC-SA sets; the **shipped model is
-  trained only on the free-licence sets** (GPL, AGPL, MIT, Apache, CC0, CC BY), see
-  `vision/assets.py`.
-- The opening book is the [Lichess chess-openings](https://github.com/lichess-org/chess-openings)
-  dataset (CC0).
-- Stockfish (GPLv3) is bundled with its source and licence. PyQt6 and python-chess are GPLv3,
-  so a redistributed build must be GPLv3-compatible. See `packaging/THIRD_PARTY_LICENSES.txt`.
-
-## Project layout
-
-```
-src/chesstrainer/
-  capture/   screen capture (mss)
-  vision/    synthetic data, CNN, training, ONNX export, detection, orientation, positions
-  engine/    Stockfish discovery + background analysis
-  explain/   facts, practical move, prompt, explainer + cache, grounding check
-  openings/  book, repertoire, trainer, spaced repetition
-  review/    games (PGN, Lichess, Chess.com), engine pass, mistake types, summary, runner
-  overlay/   app, overlay, panel, dialogs, review window, board view, hotkeys
-  settings/  settings.json, .env loading
-  levels.py / levels.yaml   skill levels
-  selfcheck.py              headless installation check
-packaging/   PyInstaller spec, launcher, third-party licences
-scripts/     asset download, evals, self-tests, build
-tests/
-```
+Full list with authors and licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+ChessTrainer is not affiliated with Lichess, Chess.com or Anthropic.

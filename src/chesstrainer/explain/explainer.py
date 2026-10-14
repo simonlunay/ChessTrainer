@@ -156,8 +156,8 @@ class ExplanationCache:
 def missing_key_message() -> str:
     places = " or ".join(str(p) for p in env_files())
     return (
-        "Explanations are off: no ANTHROPIC_API_KEY was found. Add the line "
-        f"ANTHROPIC_API_KEY=sk-ant-... to {places} and restart ChessTrainer. "
+        'Explanations are off: no Anthropic API key is set. Click "API key…" in the panel '
+        f"to paste one (or add ANTHROPIC_API_KEY=sk-ant-... to {places}). "
         "Arrows and engine lines work without it."
     )
 

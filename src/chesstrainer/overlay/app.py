@@ -71,6 +71,7 @@ from chesstrainer.overlay.screen_map import ScreenMap
 from chesstrainer.overlay.vision_thread import Snapshot, VisionThread
 from chesstrainer.paths import FROZEN
 from chesstrainer.settings.config import Settings, load_settings, save_settings, settings_path
+from chesstrainer.settings.env import anthropic_api_key
 from chesstrainer.vision.detect import BoardBox
 from chesstrainer.vision.position import PositionReading
 from chesstrainer.vision.reader import BoardReader
@@ -226,6 +227,7 @@ class TrainerApp(QObject):
         self.panel.explanations_toggled.connect(self.set_explanations)
         self.panel.mode_changed.connect(self.set_mode)
         self.panel.choose_opening_clicked.connect(self.choose_opening)
+        self.panel.api_key_clicked.connect(self.edit_api_key)
         self.book_ready.connect(self._on_book_ready)
         self.hotkey_pressed.connect(self.on_hotkey)
         self.panel.set_explanations_enabled(settings.explanations)
@@ -244,13 +246,26 @@ class TrainerApp(QObject):
     # -- lifecycle ---------------------------------------------------------------------------
 
     def start(self) -> None:
+        key_changed = False
         if not self.settings.level_chosen:
             from chesstrainer.overlay.level_dialog import ask_level
 
-            self.settings.skill_level = ask_level(self.settings.skill_level)
+            self.settings.skill_level = ask_level(self.settings.skill_level, with_api_key=True)
             self.settings.level_chosen = True
+            self.settings.api_key_prompted = True
             save_settings(self.settings)
             self.level = get_level(self.settings.skill_level)
+            key_changed = True
+        elif not self.settings.api_key_prompted:
+            # Existing installs: offer the key field once if no key is configured anywhere.
+            self.settings.api_key_prompted = True
+            save_settings(self.settings)
+            if anthropic_api_key() is None:
+                from chesstrainer.overlay.api_key_dialog import edit_api_key
+
+                key_changed = edit_api_key()
+        if key_changed:
+            self._reset_explainer()
         self.panel.set_level(self.level.key)
         if self.settings.app_mode == "trainer":
             self._start_trainer()
@@ -478,6 +493,29 @@ class TrainerApp(QObject):
             else:
                 print(self.explainer.unavailable_reason, file=sys.stderr)
         self.explain_status = "" if self.explainer.available else self.explainer.unavailable_reason
+
+    def _reset_explainer(self) -> None:
+        """Drop the explainer so the next one picks up a new or removed API key."""
+        if self.explain_worker is not None:
+            self.explain_worker.close()
+        self.explain_worker = None
+        self.explainer = None
+        self._explained = None
+        self.explain_req = None
+        self._setup_explainer()
+
+    def edit_api_key(self) -> None:
+        from chesstrainer.overlay.api_key_dialog import edit_api_key
+
+        if not edit_api_key(self.panel):
+            return
+        self._reset_explainer()
+        log.info("API key changed (explanations %s)", "available" if self.explainer else "off")
+        if self.explain_status:
+            self.panel.set_explanation(self.explain_status, status=True)
+        else:
+            self.panel.set_explanation("")
+        self._maybe_explain()
 
     def set_explanations(self, on: bool) -> None:
         self.settings.explanations = on

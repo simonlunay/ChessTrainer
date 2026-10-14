@@ -2,7 +2,8 @@
 
 Two backends: PyTorch (source checkout, GPU) and ONNX through OpenCV's DNN module (the packaged
 app, which does not include PyTorch). ``backend="auto"`` uses PyTorch when it is installed and the
-checkpoint exists, else the ONNX model.
+checkpoint exists, else the ONNX model (downloaded from the GitHub Release if missing, see
+``weights.py``). Both run on CPU-only machines; only PyTorch can use a CUDA GPU.
 """
 
 from __future__ import annotations
@@ -39,7 +40,10 @@ def resolve_device(device: str) -> str:
 
 
 def default_onnx() -> Path:
-    return model_dir() / ONNX_MODEL
+    """The installed ONNX model, or where it would be (see ``weights.find_model``)."""
+    from chesstrainer.vision.weights import find_model
+
+    return find_model() or model_dir() / ONNX_MODEL
 
 
 def _torch_classifier(checkpoint: Path, device: str) -> tuple[Callable[[ImageU8], F32], int]:
@@ -85,8 +89,9 @@ class PieceRecognizer:
             self.model_path = pt
         else:
             from chesstrainer.vision.onnx_backend import OnnxClassifier
+            from chesstrainer.vision.weights import ensure_model
 
-            path = checkpoint or default_onnx()
+            path = checkpoint or ensure_model()
             onnx = OnnxClassifier(path)
             self.device = "cpu"
             self._run, self.crop_size = onnx.probabilities, onnx.crop_size

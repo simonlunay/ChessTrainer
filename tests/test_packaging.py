@@ -68,9 +68,26 @@ def test_auto_backend_falls_back_to_onnx(monkeypatch: pytest.MonkeyPatch) -> Non
     assert rec.backend == "onnx" and rec.device == "cpu" and not rec.keep_warm
 
 
+def test_torch_without_cuda_runs_on_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch = pytest.importorskip("torch")
+    from chesstrainer.vision import recognizer
+    from chesstrainer.vision.model import FREE_CHECKPOINT
+
+    if not FREE_CHECKPOINT.exists():
+        pytest.skip("free checkpoint not trained")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    assert recognizer.resolve_device("auto") == "cpu"
+    rec = PieceRecognizer(FREE_CHECKPOINT, device="auto", keep_warm=True, backend="torch")
+    assert rec.device == "cpu" and not rec.keep_warm
+    crops = np.full((64, rec.crop_size, rec.crop_size, 3), 200, np.uint8)
+    assert rec.classify_crops(crops).shape == (64, 13)
+
+
 def test_self_check_writes_a_report(tmp_path: Path) -> None:
     from chesstrainer.selfcheck import run
 
+    if not default_onnx().exists():
+        pytest.skip("ONNX model not downloaded (python -m chesstrainer.vision.weights)")
     out = tmp_path / "r.json"
     code = run(out)
     report = json.loads(out.read_text(encoding="utf-8"))

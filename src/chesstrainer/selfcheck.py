@@ -4,7 +4,8 @@
 
 Opens no window, captures nothing and registers no hotkey: it loads the classifier and runs it
 once, starts the bundled Stockfish for a short search, loads the levels, the opening book and the
-repertoire, and reports whether an API key is configured (never the key itself) and from where.
+repertoire, and reports whether an API key is configured (never the key itself), from where, and
+which OS credential store backend is available.
 """
 
 from __future__ import annotations
@@ -84,11 +85,14 @@ def _data() -> dict[str, Any]:
 
 
 def _api_key() -> dict[str, Any]:
-    from chesstrainer.settings.env import anthropic_api_key, env_files
+    from chesstrainer.settings.env import api_key_with_source, credential_store_name, env_files
 
     files = [str(p) for p in env_files()]
+    key, source = api_key_with_source()
     return {
-        "key_configured": anthropic_api_key() is not None,
+        "key_configured": key is not None,
+        "key_source": source,
+        "credential_store": credential_store_name() or "none",
         "env_files_searched": files,
         "env_var_set": bool(os.environ.get("ANTHROPIC_API_KEY")),
     }

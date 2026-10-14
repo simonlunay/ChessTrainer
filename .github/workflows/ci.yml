@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Windows: the app captures the screen, registers Win32 hotkeys and ships as a Windows exe.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # The lockfile pins CUDA PyTorch (~2.5 GB). CI has no GPU, so install the locked
+      # environment without it and add the much smaller CPU build of PyTorch.
+      - name: Install dependencies (CPU PyTorch)
+        run: |
+          uv sync --locked --no-install-package torch --no-install-package torchvision
+          uv pip install --python .venv torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      # The classifier weights are a release asset, not part of the repo. Tests that need them
+      # skip when they are missing (e.g. before the first release exists).
+      - name: Download classifier weights
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download v0.1.0 --pattern "square_classifier_free.*" --dir data/models --clobber
+
+      - name: Ruff (format)
+        run: uv run --no-sync ruff format --check src tests scripts
+
+      - name: Ruff (lint)
+        run: uv run --no-sync ruff check src tests scripts
+
+      - name: Mypy (strict)
+        run: uv run --no-sync mypy src
+
+      - name: Pytest
+        run: uv run --no-sync pytest -rs

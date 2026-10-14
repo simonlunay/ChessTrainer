@@ -62,6 +62,9 @@ class Settings:
     #: Plain-English explanations of the suggested move (needs ANTHROPIC_API_KEY). Off = no API
     #: calls at all (arrows, engine lines and eval bar only). Panel checkbox / Ctrl+E; saved.
     explanations: bool = True
+    #: True once the API key field was offered (first launch); the key itself is never stored
+    #: here but in the OS credential store (panel "API key…" button changes it).
+    api_key_prompted: bool = False
     #: Claude model for explanations: they run often, so a fast, cheap one by default.
     explain_model: str = "claude-haiku-5-5"
     #: Claude effort ("low" | "medium" | "high"). Phase-4 eval: medium flagged 7-9% of

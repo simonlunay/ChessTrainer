@@ -73,6 +73,7 @@ class SidePanel(QWidget):
     explanations_toggled = pyqtSignal(bool)
     mode_changed = pyqtSignal(str)  # "analysis" / "trainer"
     choose_opening_clicked = pyqtSignal()
+    api_key_clicked = pyqtSignal()
     closed = pyqtSignal()
 
     EXPLAIN_SHORTCUT = "Ctrl+E"
@@ -210,7 +211,13 @@ class SidePanel(QWidget):
         level_row.addWidget(QLabel("Level:"))
         level_row.addWidget(self.level, 1)
         right.addLayout(level_row)
-        right.addWidget(self.explain_box)
+        explain_row = QHBoxLayout()
+        explain_row.addWidget(self.explain_box, 1)
+        key_button = QPushButton("API key…")
+        key_button.setToolTip("Paste or remove your Anthropic API key (used for explanations).")
+        key_button.clicked.connect(self.api_key_clicked)
+        explain_row.addWidget(key_button)
+        right.addLayout(explain_row)
         buttons = QGridLayout()
         buttons.addWidget(flip, 0, 0)
         buttons.addWidget(select, 0, 1)

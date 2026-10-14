@@ -28,7 +28,7 @@ settings); assets/eval data in `data/` (mostly git-ignored).
 (or `.venv/Scripts/python ...` directly).
 ```
 python -m uv sync                                   # CUDA torch from the cu126 index
-python -m uv run pytest                             # 151 tests (engine tests skip w/o Stockfish)
+python -m uv run pytest                             # 164 tests (engine tests skip w/o Stockfish)
 .venv/Scripts/ruff format src tests scripts && .venv/Scripts/ruff check src tests scripts
 .venv/Scripts/mypy src
 python -m uv run python scripts/download_assets.py  # Lichess piece sets + board textures
@@ -46,6 +46,9 @@ python -m uv run python scripts/eval_phase5.py [--no-explain] [--budget 1.0]  # 
 python -m uv run python scripts/eval_phase6.py [--no-explain] [--offline]  # review on fetched games
 python -m uv run python scripts/build_exe.py [--skip-build]  # PyInstaller -> dist/ChessTrainer + audit
 dist/ChessTrainer/ChessTrainer.exe --self-check report.json  # headless check (no window/capture)
+python -m uv run python -m chesstrainer.vision.weights   # download the ONNX weights from the release
+python -m uv run python scripts/cpu_benchmark.py    # CUDA hidden: CPU timing on data/real -> cpu_report.txt
+python -m uv run python scripts/make_release.py [--publish]  # release/ zip + weights + SHA256SUMS
 ```
 `eval_phase6.py` fetches public games (Lichess maia1/maia5, Chess.com hikaru) + 3 sample PGNs,
 real Stockfish, explains the 3 biggest mistakes per game with Haiku (~$0.005/run).
@@ -60,8 +63,11 @@ time (never send global keystrokes; `browser_check.py` posts keys to its own Chr
 Stockfish: found via `Settings.engine_path`, `STOCKFISH_PATH` (env/`.env`), PATH, or `stockfish*`
 exe in `data/engine/` or `%APPDATA%\ChessTrainer\engine\` (sf 19 "x86-64-universal" is in
 `data/engine/`, git-ignored). Missing -> setup message (panel + stderr), app keeps running.
-API key: `ANTHROPIC_API_KEY` in the project `.env` or `%APPDATA%\ChessTrainer\.env` (git-ignored,
-never hardcode; `settings/env.py`). Missing -> explanations off with a message, app keeps running.
+API key (`settings/env.py`): `ANTHROPIC_API_KEY` env var > OS credential store (keyring, Windows
+Credential Manager, service "ChessTrainer"; saved by the first-run dialog / panel "API key…") >
+project `.env` (dev only) > `%APPDATA%\ChessTrainer\.env`. `.env` keys are never copied into
+os.environ. Missing -> explanations off with a message, app keeps running. Tests use an in-memory
+keyring (`tests/conftest.py`, autouse); never touch the real store in tests.
 User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overrides; tests use it).
 
 ## Plan and status
@@ -254,8 +260,18 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   `%APPDATA%\ChessTrainer\.env`; engine search uses `bundle_dir()/engine`. Spec
   `packaging/chesstrainer.spec`: onedir, windowed, icon, excludes torch and training modules,
   bundles YAML/TSV data, the ONNX model, the Stockfish folder (with source + licence) and
-  `THIRD_PARTY_LICENSES.txt`. Frozen app logs to `%APPDATA%\ChessTrainer\chesstrainer.log`.
+  `LICENSE` + `THIRD_PARTY_NOTICES.md`. Frozen app logs to `%APPDATA%\ChessTrainer\chesstrainer.log`.
   `--self-check` (`selfcheck.py`) checks classifier/engine/data/key presence headless.
+
+- **Public-repo prep (phase 7)**: GPL-3.0 `LICENSE`, `THIRD_PARTY_NOTICES.md` (bundled with
+  LICENSE in the exe), `CONTRIBUTING.md`, `.env.example`, CI `.github/workflows/ci.yml` (windows,
+  uv sync without torch + CPU torch wheel, weights via `gh release download`, ruff/mypy/pytest).
+  Weights are git-ignored release assets (tag `weights.RELEASE_TAG` v0.1.0, SHA-256 pinned in
+  `vision/weights.py`); `PieceRecognizer` ONNX path calls `ensure_model()` (search data/models or
+  bundle, then `%APPDATA%\ChessTrainer\models`; download there when frozen, to data/models in a
+  checkout; `CHESSTRAINER_WEIGHTS_URL` overrides). `api_key_prompted` setting: first-run level
+  dialog has the key field; existing installs without a key get the key dialog once.
+  Media placeholders listed in `docs/media/README.md`.
 
 ## Results so far
 - Phase 1 classifier: per-square 99.61% val, 99.88% held-out styles, 98.1% real renders.
@@ -307,6 +323,12 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   frozen self-check passed (ONNX ~44 ms first inference, bundled SF19, no key without the user's
   .env). Phase 6 API spend: ~$0.01 (two eval_phase6 runs; tests use fake clients).
 
+- Phase 7: CPU-only (`cpu_report.txt`, CUDA hidden): ONNX 41 ms/board (20 threads), 214 ms
+  (1 thread), torch CPU 56 ms; full new-position frame 48 / 219 / 63 ms; same exact positions as
+  GPU (user screenshots 11/11, renders 51/60 with orientation given). Git history secret scan
+  (6 commits, 161 objects incl. binaries): clean. Release zip 194 MB. Frozen exe: keyring finds
+  Windows Credential Manager; weights download tested against a local server. API spend: $0.
+
 ## Known limitations
 - Unusual chess.com piece sets ("8-bit", "light") misclassify; fix = more piece styles in training.
 - Orientation is ambiguous on boards without coordinates in random/endgame positions (real games
@@ -346,6 +368,5 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   piece, slow attack) gets "missed ways to win material" or "positional" even when a human would
   name it differently. Explanations start only after all selected games are analysed. Lichess
   returns every speed (bullet included); the Chess.com fetch looks back at most 6 monthly
-  archives. Builds are GPLv3-bound (PyQt6, python-chess, Stockfish); no LICENSE file has been
-  chosen for the repo. `docs/demo.gif` is a placeholder in the README (record it with the Record
-  button). Global hotkeys are Windows-only.
+  archives. Builds are GPLv3-bound (PyQt6, python-chess, Stockfish); the repo is GPL-3.0
+  (phase 7). README media are placeholders under `docs/media/` (list in its README.md). Global hotkeys are Windows-only.

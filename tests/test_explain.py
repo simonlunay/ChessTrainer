@@ -245,7 +245,7 @@ def test_explainer_sends_only_facts_and_caches(tmp_path: Path) -> None:
 def test_explainer_without_key_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("chesstrainer.explain.explainer.anthropic_api_key", lambda: None)
     ex = Explainer("claude-haiku-5-5")
-    assert not ex.available and "ANTHROPIC_API_KEY" in ex.unavailable_reason
+    assert not ex.available and "API key" in ex.unavailable_reason
     mf = facts_for("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2", "Nf3")
     with pytest.raises(ExplainError):
         ex.explain(mf, get_level("beginner"))
