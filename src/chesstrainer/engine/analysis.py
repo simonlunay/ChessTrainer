@@ -124,7 +124,7 @@ class AnalysisEngine:
         self.name = ""
         self._engine: chess.engine.SimpleEngine | None = None
         self._cond = threading.Condition()
-        self._pending: tuple[int, chess.Board, float] | None = None
+        self._pending: tuple[int, chess.Board, float, tuple[chess.Move, ...]] | None = None
         self._active: chess.engine.SimpleAnalysisResult | None = None
         self._next_id = 0
         self._closing = False
@@ -139,11 +139,15 @@ class AnalysisEngine:
     def wait_ready(self, timeout: float = 10.0) -> bool:
         return self._ready.wait(timeout) and self._engine is not None
 
-    def analyze(self, board: chess.Board) -> int:
-        """Start analysing ``board`` (stopping any running search). Returns the request id."""
+    def analyze(self, board: chess.Board, root_moves: tuple[chess.Move, ...] = ()) -> int:
+        """Start analysing ``board`` (stopping any running search). Returns the request id.
+
+        ``root_moves`` restricts the search to those moves (the opening trainer uses it to
+        evaluate the book move, which need not be among Stockfish's top lines)."""
         with self._cond:
             self._next_id += 1
-            self._pending = (self._next_id, board.copy(stack=False), time.perf_counter())
+            pending = (self._next_id, board.copy(stack=False), time.perf_counter(), root_moves)
+            self._pending = pending
             if self._active is not None:
                 self._active.stop()
             self._cond.notify()
@@ -196,10 +200,10 @@ class AnalysisEngine:
                 if self._closing:
                     break
                 assert self._pending is not None
-                req_id, board, t_req = self._pending
+                req_id, board, t_req, root_moves = self._pending
                 self._pending = None
             try:
-                self._search(req_id, board, t_req)
+                self._search(req_id, board, t_req, root_moves)
             except (chess.engine.EngineError, chess.engine.EngineTerminatedError) as err:
                 self.on_error(f"Stockfish stopped unexpectedly ({err}); restarting it.")
                 with self._cond:
@@ -215,14 +219,23 @@ class AnalysisEngine:
             except Exception:  # noqa: BLE001 - shutting down anyway
                 self._engine.close()
 
-    def _search(self, req_id: int, board: chess.Board, t_req: float) -> None:
+    def _search(
+        self,
+        req_id: int,
+        board: chess.Board,
+        t_req: float,
+        root_moves: tuple[chess.Move, ...] = (),
+    ) -> None:
         assert self._engine is not None
-        collector = LineCollector(board, self.multipv)
+        multipv = min(self.multipv, len(root_moves)) if root_moves else self.multipv
+        collector = LineCollector(board, multipv)
         fen = board.fen()
         last_emit = -math.inf
         last_best: chess.Move | None = None
         limit = chess.engine.Limit(time=self.max_seconds)
-        with self._engine.analysis(board, limit, multipv=collector.expected) as result:
+        roots = list(root_moves) if root_moves else None
+        analysis = self._engine.analysis(board, limit, multipv=collector.expected, root_moves=roots)
+        with analysis as result:
             with self._cond:
                 self._active = result
                 if self._pending is not None or self._closing:

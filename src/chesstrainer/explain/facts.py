@@ -45,6 +45,10 @@ class MoveFacts:
     mover: chess.Color
     level_key: str
     facts: list[Fact] = field(default_factory=list)
+    #: Extra prompt lines (e.g. the opening trainer's task) and a cache-key discriminator, so
+    #: an opening explanation and a plain one of the same move are cached separately.
+    instructions: str = ""
+    context: str = ""
 
     @property
     def tags(self) -> set[str]:

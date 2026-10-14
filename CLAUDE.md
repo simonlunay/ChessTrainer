@@ -14,6 +14,10 @@ settings); assets/eval data in `data/` (mostly git-ignored).
 - Clean, typed (mypy --strict), tested code; ruff (line length 100).
 - The user commits themselves; don't commit unless asked.
 - Concise summaries with honest numbers, including failures.
+- **API budget: keep total API spend under $5 per phase.** Don't ask about it; just stay under
+  it. Use cheap models (Haiku) or the rule-based checker for evals, **never Opus**. If something
+  would push past $5, cut it down or skip it and say so in the report.
+- **Report total API spend at the end of each phase.**
 - **Never send keystrokes or mouse input, or open windows on the user's screen, for testing
   without asking first** (this phase and every later one). That includes the on-screen
   self-tests (`live_selftest.py`, `overlay_selftest.py`, `browser_check.py`) and launching the
@@ -24,7 +28,7 @@ settings); assets/eval data in `data/` (mostly git-ignored).
 (or `.venv/Scripts/python ...` directly).
 ```
 python -m uv sync                                   # CUDA torch from the cu126 index
-python -m uv run pytest                             # 101 tests (engine test skips w/o Stockfish)
+python -m uv run pytest                             # 124 tests (engine test skips w/o Stockfish)
 .venv/Scripts/ruff format src tests scripts && .venv/Scripts/ruff check src tests scripts
 .venv/Scripts/mypy src
 python -m uv run python scripts/download_assets.py  # Lichess piece sets + board textures
@@ -37,9 +41,12 @@ python -m uv run chesstrainer [--demo|--record-gif S|--grid|--calibrate|--select
 python -m uv run python scripts/overlay_selftest.py # phase 3: latency + alignment -> data/eval/phase3_report.txt
 python -m uv run python scripts/browser_check.py    # phase 3 on lichess in a throwaway Chrome window
 python -m uv run python scripts/eval_phase4.py [--effort low|medium]  # -> data/eval/phase4_report.txt
+python -m uv run python scripts/eval_phase5.py [--no-explain] [--budget 1.0]  # -> data/eval/phase5_report.txt
 ```
-`eval_phase4.py` makes ~150 explanation calls (Haiku, ~$0.05) + ~150 judge calls (Opus 5.5,
-~$1.80) per run: ask before running it again.
+`eval_phase4.py` defaults to an Opus judge (~$1.80/run): under the budget rule never run it with
+Opus again; use `--judge-model claude-haiku-5-5` or rely on the rule checker.
+`eval_phase5.py` drives the real app offscreen (no screen use) with real Stockfish through 15
+scripted opening lines incl. deviations/takebacks; with explanations ~73 Haiku calls, ~$0.02.
 The self-tests take over part of the screen for ~1-2 min; the user may be using the PC at the same
 time (never send global keystrokes; `browser_check.py` posts keys to its own Chrome window only).
 Stockfish: found via `Settings.engine_path`, `STOCKFISH_PATH` (env/`.env`), PATH, or `stockfish*`
@@ -65,11 +72,15 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
    the facts. Style per level (Beginner 1–2 simple sentences defining terms; Novice 2; Intermediate
    2–3 with positional ideas; Advanced/Expert 3 with standard terminology + key line). Cache by
    FEN+move+level.
-5. Opening trainer: Lichess chess-openings dataset (CC0, ECO/name/moves); searchable picker with
-   side choice; level-based recommendations (Italian, London for beginners) but any opening
-   allowed; line depth scales with level; guided mode (next book move arrow + explanation,
-   identify variation on replies), deviation handling (flag, say if it's a mistake, show engine
-   reply); practice mode (no arrows, check moves, spaced repetition in SQLite).
+   Follow-ups (done in phase 5): explanations on/off (panel checkbox, Ctrl+E, saved; off = zero
+   API calls); rule-based grounding check on every live explanation (regenerate once, else show
+   the computed facts), outcomes logged.
+5. **DONE** Opening trainer: Lichess chess-openings dataset (CC0, ECO/name/moves); searchable
+   picker with side choice; level-based recommendations (2-3 per side at Beginner) but any opening
+   allowed; line depth scales with level; guided mode (next book move arrow + grounded
+   explanation with the opening's ideas, variation named on replies), deviation handling (flag,
+   say if it's a mistake, show engine reply, switch to normal analysis); practice mode (no
+   arrows, check moves, spaced repetition in SQLite). Works with explanations off.
 6. Review mode (paste PGN, step through, best moves + explanations for the user's mistakes,
    filtered by level thresholds), global hotkeys (toggle overlay, switch modes, flip
    orientation), PyInstaller packaging.
@@ -150,6 +161,44 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   not pending; once per (FEN, move, level); errors are not retried until the position or level
   changes (it runs at 10 Hz). Typed API errors -> readable panel messages (no key, bad key,
   out of credits, model not found, rate limit, offline). Tooltip shows the facts.
+- **Live grounding check** (`explainer.py`, `fallback.py`): every new explanation is checked with
+  `check_grounding`; if flagged, one retry with the flagged claims listed in the prompt; if that
+  is flagged too, `facts_summary` (move fact + top facts by tag priority, level length) is shown.
+  Outcome (passed/regenerated/fallback) cached with the text and logged per explanation to
+  `grounding_log` in `explanations.sqlite`; the app logs session counts; panel tooltip says which.
+  Cache key gains `MoveFacts.context` (opening explanations are cached separately).
+- **Explanations toggle**: `Settings.explanations` (saved), panel checkbox + Ctrl+E (application
+  shortcut, works while the panel has focus; global hotkeys are phase 6). Off: the `Explainer`
+  is not even created, `_maybe_explain` returns, late results are dropped.
+- **Opening book** (`openings/book.py`): `openings/data/{a..e}.tsv` vendored (CC0, commit noted in
+  `SOURCE.txt`), replayed into a position graph keyed by FEN without counters (transpositions);
+  ~1.8 s to load, so the app loads it on a thread. `name_matches`: full variation names match
+  themselves + sub-variations; plain names match any name part that starts or ends with them
+  ("Queen's Pawn Game: London System" is a London; "Semi-Slav" is not a Slav). Accents folded.
+- **Repertoire** (`openings/repertoire.yaml`, the only place curated opening knowledge lives):
+  per opening + side: `ideas` (sentences given to Claude as facts), `notes` (per SAN), `lines`
+  (curated main lines). Curated for Italian (W/B), London, Scotch, Queen's Gambit, Scandinavian,
+  QGD, Caro-Kann; ideas only for the intermediate+ recommendations. Recommendations live in
+  `levels.yaml` (Beginner W: Italian, London, Scotch; B: Italian, Scandinavian, QGD).
+- **Trainer** (`openings/trainer.py`, Qt-free): `OpeningTree` = dataset lines matching the name +
+  curated lines; trainer's move = curated, else the book move with most lines (gambit lines
+  weigh 0.3 unless the opening is a gambit). `TrainerSession.observe(board)` matches placements
+  only: same / earlier (takeback) / 1-2 legal moves / start position (new game) / a book position
+  (resync mid-line) / else "lost". Events: user_correct, user_other (other book move of this
+  opening), user_other_opening, user_left (graded), opp_book (variation named), opp_other_opening,
+  opp_left (graded), complete (depth = `opening_depth_plies` or end of book). Out of book ->
+  state `left` -> the app runs normal analysis.
+- **Trainer in the app**: the session's board replaces the reading's (exact turn/castling/ep).
+  In book on the player's turn Stockfish searches only the book move (`AnalysisEngine.analyze(
+  board, root_moves)`), giving the eval bar and the PV for `openings/explain.opening_facts`
+  (phase-4 facts + opening/variation names + note + ideas, extra prompt instructions); arrow =
+  book move (guided). Opponent's turn in book: normal MultiPV search, no arrows, no explanation.
+  Grading: eval before (previous search, mover's view) minus after (new position's best, at depth
+  14 or final) -> `Level.classify_loss` -> "Stockfish: X is a mistake (about N pawns worse than
+  the best/book move)". Practice: no arrow, no lines, no explanation of the answer; misses are
+  revealed after a takeback; `PracticeStore` (`openings.sqlite`): SM-2-lite cards per (opening,
+  side, position), reviews logged; `practice_reply` suggests the opponent book move leading to
+  the most due/new positions. Settings: `app_mode`, `trainer_opening/side/mode`.
 - **Grounding check** (`explain/grounding.py`): literal checker for squares, moves, piece-on-
   square, concepts (tag map), numbers and verdict words not in the facts; the eval pairs it with
   an Opus 5.5 judge that lists claims and marks each supported/unsupported (JSON schema output).
@@ -180,6 +229,17 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   Prompt v1 (before the fact/prompt fixes) was 67% at low effort. Lengths 1.7-2.4 sentences on
   average, max 3.
 
+- Phase 5 (`data/eval/phase5_report.txt`, `phase5_steps.jsonl`; offscreen, SF19, 2 s/position,
+  no screen use): 15/15 scripted scenarios produced exactly the expected trainer events: main
+  lines to depth (Italian W/B, London via transposition, Scandinavian, QGD), opponent leaving
+  book (Qh4 graded "blunder", h6/Qf3 "about 1 pawn worse, not a real mistake at your level"),
+  opponent choosing another opening (Sicilian, Ruy Lopez, London), user's other book move +
+  takeback, user leaving book (Qxd4 graded "blunder vs the book move"), a dataset-only Najdorf at
+  Expert, practice mode with a miss. Explanations through the live path: 73 (52 book moves with
+  opening facts); grounding check 71 passed first time, 2 regenerated, 0 fell back to facts
+  (earlier run: 72/1/0); latency median 2.4 s, max 4.5 s; ~$0.02 per run.
+  Phase 5 API spend in total: ~$0.04 (two explanation runs; all tests use fake clients).
+
 ## Known limitations
 - Unusual chess.com piece sets ("8-bit", "light") misclassify; fix = more piece styles in training.
 - Orientation is ambiguous on boards without coordinates in random/endgame positions (real games
@@ -200,7 +260,14 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   imprecise wording, occasionally a wrong inference ("the queen checks along the e-file" when it
   is the rank). The judge is strict and is itself an LLM; its flags were audited by hand for one
   run only. Run-to-run noise is about +-5 points on the flag rate.
-- The Anthropic account ran out of credits during the last eval run (2026-10-13, after ~$13 of
-  eval calls, mostly the Opus judge); explanations show "out of credits" until it is topped up.
+- Phase 5: the trainer was tested offscreen only (scripted positions fed as board-reader
+  readings, real Stockfish + Claude), not on the real screen (rule: ask first). The rule checker
+  passes text it cannot judge for sense: a few Expert explanations were garbled or added loose
+  causal glue but used only fact words. Explanations use the depth-16 evaluation, so the wording
+  can differ from the final eval shown later. Dataset lines are shorter than the Expert depth (24
+  plies) in many openings (Najdorf/English Attack ends at ply 15): the line then ends as "End of
+  the book". Uncurated openings pick the most common dataset move, which is not always the most
+  popular/best one. Book-move explanations are triggered only for guided mode (practice would
+  give the answer away). Ctrl+E only works while the panel has focus.
 - Positional facts are basic (no outposts, king safety beyond castling, space or plans); the
   model is told not to invent them, so quiet moves get plain "what it does + evaluation" texts.

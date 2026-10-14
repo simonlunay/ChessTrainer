@@ -1,0 +1,2 @@
+Lichess chess-openings dataset (https://github.com/lichess-org/chess-openings),
+commit a6189a30dc273ccb21fc2536a9a2fefd5592a67a, CC0 1.0 (see COPYING.txt). Files a-e.tsv unchanged.

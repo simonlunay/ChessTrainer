@@ -19,6 +19,9 @@ from typing import Any, Literal
 log = logging.getLogger(__name__)
 
 Orientation = Literal["auto", "white", "black"]
+AppMode = Literal["analysis", "trainer"]
+Side = Literal["white", "black"]
+TrainerMode = Literal["guided", "practice"]
 
 
 @dataclass
@@ -53,7 +56,8 @@ class Settings:
     skill_level: str = "beginner"
     #: False until the user confirmed a level in the first-launch prompt.
     level_chosen: bool = False
-    #: Plain-English explanations of the suggested move (needs ANTHROPIC_API_KEY).
+    #: Plain-English explanations of the suggested move (needs ANTHROPIC_API_KEY). Off = no API
+    #: calls at all (arrows, engine lines and eval bar only). Panel checkbox / Ctrl+E; saved.
     explanations: bool = True
     #: Claude model for explanations: they run often, so a fast, cheap one by default.
     explain_model: str = "claude-haiku-5-5"
@@ -65,6 +69,13 @@ class Settings:
     explain_delay_s: float = 1.5
     #: ...and the engine must have reached this depth (or finished), so the move is settled.
     explain_min_depth: int = 16
+    #: "analysis" (best-move arrows) or "trainer" (opening trainer).
+    app_mode: AppMode = "analysis"
+    #: Opening trainer choice: a Lichess opening name (family or full variation), the side the
+    #: player trains, and guided (arrows) or practice (spaced repetition, no arrows).
+    trainer_opening: str = ""
+    trainer_side: Side = "white"
+    trainer_mode: TrainerMode = "guided"
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -91,6 +102,12 @@ def load_settings(path: Path | None = None) -> Settings:
     settings = Settings(**{k: v for k, v in raw.items() if k in known})
     if settings.orientation not in ("auto", "white", "black"):
         settings.orientation = "auto"
+    if settings.app_mode not in ("analysis", "trainer"):
+        settings.app_mode = "analysis"
+    if settings.trainer_side not in ("white", "black"):
+        settings.trainer_side = "white"
+    if settings.trainer_mode not in ("guided", "practice"):
+        settings.trainer_mode = "guided"
     from chesstrainer.levels import LEVEL_KEYS  # local: levels imports nothing from here
 
     if settings.skill_level not in LEVEL_KEYS:

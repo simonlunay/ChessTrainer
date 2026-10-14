@@ -47,11 +47,23 @@ def user_message(facts: MoveFacts, level: Level) -> str:
             "This move is not Stockfish's top move: say in a few words that the top move named "
             "in the facts is slightly better, but this one is simpler to play.\n"
         )
+    extra = f"{facts.instructions}\n" if facts.instructions else ""
     return (
         f"Player level: {level.label}.\n"
         f"How to write: {style.style}\n"
         f"Length: at most {length}.\n"
-        f"{practical}\n"
+        f"{practical}{extra}\n"
         f"Move to explain: {facts.san} ({side} to move).\n\n"
         f"FACTS:\n{facts.text()}\n"
+    )
+
+
+def retry_message(previous: str, problems: list[str]) -> str:
+    """Follow-up after a draft that the grounding check rejected."""
+    listed = "\n".join(f"- {p}" for p in problems)
+    return (
+        f"Your explanation was:\n{previous}\n\n"
+        f"It states things the facts do not contain:\n{listed}\n\n"
+        "Write the explanation again, saying only what the facts say. Reply with the finished "
+        "explanation only."
     )

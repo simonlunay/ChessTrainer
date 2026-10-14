@@ -1,4 +1,5 @@
-"""Side panel: eval bar, candidate moves with their lines, explanation, level, and controls."""
+"""Side panel: eval bar, candidate moves with their lines, opening trainer box, explanation,
+level, explanations on/off (Ctrl+E), mode, and controls."""
 
 from __future__ import annotations
 
@@ -6,8 +7,9 @@ import html
 
 import chess
 from PyQt6.QtCore import QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QCloseEvent, QColor, QFont, QPainter, QPaintEvent
+from PyQt6.QtGui import QCloseEvent, QColor, QFont, QKeySequence, QPainter, QPaintEvent, QShortcut
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -68,7 +70,12 @@ class SidePanel(QWidget):
     pause_toggled = pyqtSignal(bool)
     record_toggled = pyqtSignal(bool)
     level_changed = pyqtSignal(str)  # level key
+    explanations_toggled = pyqtSignal(bool)
+    mode_changed = pyqtSignal(str)  # "analysis" / "trainer"
+    choose_opening_clicked = pyqtSignal()
     closed = pyqtSignal()
+
+    EXPLAIN_SHORTCUT = "Ctrl+E"
 
     def __init__(self) -> None:
         super().__init__()
@@ -112,6 +119,52 @@ class SidePanel(QWidget):
             lambda i: self.level_changed.emit(str(self.level.itemData(i)))
         )
 
+        self.explain_box = QCheckBox("Explanations")
+        self.explain_box.setChecked(True)
+        self.explain_box.setToolTip(
+            f"Plain-English explanations from Claude ({self.EXPLAIN_SHORTCUT}). Off: no API "
+            "calls; arrows, engine lines and the eval bar still work."
+        )
+        self.explain_box.toggled.connect(self.explanations_toggled)
+        shortcut = QShortcut(QKeySequence(self.EXPLAIN_SHORTCUT), self)
+        shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        shortcut.activated.connect(self.explain_box.toggle)
+
+        self.mode = QComboBox()
+        self.mode.addItem("Best-move analysis", "analysis")
+        self.mode.addItem("Opening trainer", "trainer")
+        self.mode.currentIndexChanged.connect(
+            lambda i: self.mode_changed.emit(str(self.mode.itemData(i)))
+        )
+        self.trainer_box = QFrame()
+        self.trainer_box.setFrameShape(QFrame.Shape.StyledPanel)
+        self.trainer_title = QLabel()
+        self.trainer_title.setWordWrap(True)
+        self.trainer_title.setStyleSheet("font-weight: bold")
+        self.trainer_variation = QLabel()
+        self.trainer_variation.setWordWrap(True)
+        self.trainer_variation.setStyleSheet("color: gray")
+        self.trainer_message = QLabel()
+        self.trainer_message.setWordWrap(True)
+        self.trainer_message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.trainer_prompt = QLabel()
+        self.trainer_prompt.setWordWrap(True)
+        self.trainer_prompt.setStyleSheet("color: #15781b; font-weight: bold")
+        self.trainer_stats = QLabel()
+        self.trainer_stats.setWordWrap(True)
+        self.trainer_stats.setStyleSheet("color: gray")
+        choose = QPushButton("Choose opening…")
+        choose.clicked.connect(self.choose_opening_clicked)
+        tb = QVBoxLayout(self.trainer_box)
+        tb.setContentsMargins(6, 4, 6, 4)
+        tb.addWidget(self.trainer_title)
+        tb.addWidget(self.trainer_variation)
+        tb.addWidget(self.trainer_message)
+        tb.addWidget(self.trainer_prompt)
+        tb.addWidget(self.trainer_stats)
+        tb.addWidget(choose)
+        self.trainer_box.hide()
+
         self.turn_button = QPushButton("Other side to move")
         self.turn_button.setToolTip("The side to move was guessed; analyse for the other side.")
         self.turn_button.hide()
@@ -134,6 +187,11 @@ class SidePanel(QWidget):
         self.record.toggled.connect(self.record_toggled)
 
         right = QVBoxLayout()
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Mode:"))
+        mode_row.addWidget(self.mode, 1)
+        right.addLayout(mode_row)
+        right.addWidget(self.trainer_box)
         right.addWidget(self.status)
         right.addWidget(self.turn_button)
         right.addWidget(_rule())
@@ -146,6 +204,7 @@ class SidePanel(QWidget):
         level_row.addWidget(QLabel("Level:"))
         level_row.addWidget(self.level, 1)
         right.addLayout(level_row)
+        right.addWidget(self.explain_box)
         buttons = QGridLayout()
         buttons.addWidget(flip, 0, 0)
         buttons.addWidget(select, 0, 1)
@@ -208,6 +267,39 @@ class SidePanel(QWidget):
             self.level.blockSignals(True)
             self.level.setCurrentIndex(i)
             self.level.blockSignals(False)
+
+    def set_explanations_enabled(self, on: bool) -> None:
+        if self.explain_box.isChecked() != on:
+            self.explain_box.blockSignals(True)
+            self.explain_box.setChecked(on)
+            self.explain_box.blockSignals(False)
+
+    def set_mode(self, mode: str) -> None:
+        i = self.mode.findData(mode)
+        if i >= 0 and i != self.mode.currentIndex():
+            self.mode.blockSignals(True)
+            self.mode.setCurrentIndex(i)
+            self.mode.blockSignals(False)
+        self.trainer_box.setVisible(mode == "trainer")
+
+    def set_trainer(
+        self,
+        title: str,
+        variation: str = "",
+        message: str = "",
+        prompt: str = "",
+        stats: str = "",
+    ) -> None:
+        """Opening trainer box: opening + side, variation name, last event, what to do now."""
+        for label, text in (
+            (self.trainer_title, title),
+            (self.trainer_variation, variation),
+            (self.trainer_message, message),
+            (self.trainer_prompt, prompt),
+            (self.trainer_stats, stats),
+        ):
+            label.setText(text)
+            label.setVisible(bool(text))
 
     def set_recording(self, on: bool, text: str | None = None) -> None:
         self.record.blockSignals(True)

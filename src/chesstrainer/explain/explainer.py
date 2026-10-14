@@ -5,6 +5,12 @@ the move and the level are sent) and caches the result in SQLite by position + m
 model, so a position seen again (or a replay) costs nothing. Without an API key it stays
 ``available = False`` with a clear ``unavailable_reason`` and the app just skips explanations.
 
+Every new explanation goes through the rule-based grounding check (``grounding.py``). If it
+flags a claim that is not in the facts, the explanation is requested once more with the flagged
+claims listed; if that one fails too, the facts themselves are shown in plain language
+(``fallback.py``). Each outcome (passed / regenerated / fallback) is logged to the
+``grounding_log`` table next to the cache; :meth:`ExplanationCache.grounding_stats` counts them.
+
 :class:`ExplainWorker` runs explanations off the GUI thread; like the engine, a new request
 replaces a queued one, and results carry the request id so stale ones can be dropped.
 """
@@ -12,6 +18,7 @@ replaces a queued one, and results carry the request id so stale ones can be dro
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sqlite3
 import threading
@@ -25,7 +32,9 @@ from typing import Any
 import anthropic
 
 from chesstrainer.explain.facts import MoveFacts
-from chesstrainer.explain.prompt import PROMPT_VERSION, SYSTEM, user_message
+from chesstrainer.explain.fallback import facts_summary
+from chesstrainer.explain.grounding import Issue, check_grounding
+from chesstrainer.explain.prompt import PROMPT_VERSION, SYSTEM, retry_message, user_message
 from chesstrainer.levels import Level
 from chesstrainer.settings.config import settings_path
 from chesstrainer.settings.env import anthropic_api_key, env_files
@@ -34,6 +43,9 @@ log = logging.getLogger(__name__)
 
 #: Response cap. Explanations are 1-3 sentences; the rest is headroom for (low-effort) thinking.
 MAX_TOKENS = 2000
+
+#: Grounding outcomes: first answer passed the check / second answer passed / facts shown.
+OUTCOMES = ("passed", "regenerated", "fallback")
 
 
 class ExplainError(Exception):
@@ -48,6 +60,9 @@ class Explanation:
     seconds: float
     input_tokens: int = 0
     output_tokens: int = 0
+    outcome: str = "passed"  # one of OUTCOMES
+    issues: tuple[str, ...] = ()  # what the check flagged (both attempts)
+    calls: int = 1  # API calls made (0 when cached)
 
 
 def position_key(fen: str) -> str:
@@ -66,6 +81,14 @@ class ExplanationCache:
                 " key TEXT PRIMARY KEY, fen TEXT, move TEXT, level TEXT, model TEXT,"
                 " text TEXT, facts TEXT, created REAL)"
             )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(explanations)")}
+            if "outcome" not in columns:  # caches written before the grounding check
+                db.execute("ALTER TABLE explanations ADD COLUMN outcome TEXT DEFAULT 'passed'")
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS grounding_log ("
+                " created REAL, fen TEXT, move TEXT, level TEXT, model TEXT, context TEXT,"
+                " outcome TEXT, issues TEXT)"
+            )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -77,23 +100,57 @@ class ExplanationCache:
             db.close()
 
     @staticmethod
-    def key(fen: str, move_uci: str, level: str, model: str) -> str:
+    def key(fen: str, move_uci: str, level: str, model: str, context: str = "") -> str:
         raw = f"v{PROMPT_VERSION}|{position_key(fen)}|{move_uci}|{level}|{model}"
+        if context:
+            raw += f"|{context}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
-    def get(self, fen: str, move_uci: str, level: str, model: str) -> str | None:
-        k = self.key(fen, move_uci, level, model)
+    def get(
+        self, fen: str, move_uci: str, level: str, model: str, context: str = ""
+    ) -> tuple[str, str] | None:
+        """(text, outcome) or None."""
+        k = self.key(fen, move_uci, level, model, context)
         with self._lock, self._connect() as db:
-            row = db.execute("SELECT text FROM explanations WHERE key = ?", (k,)).fetchone()
-        return None if row is None else str(row[0])
+            row = db.execute(
+                "SELECT text, outcome FROM explanations WHERE key = ?", (k,)
+            ).fetchone()
+        return None if row is None else (str(row[0]), str(row[1] or "passed"))
 
-    def put(self, facts: MoveFacts, level: str, model: str, text: str) -> None:
-        k = self.key(facts.fen, facts.move.uci(), level, model)
+    def put(
+        self, facts: MoveFacts, level: str, model: str, text: str, outcome: str = "passed"
+    ) -> None:
+        k = self.key(facts.fen, facts.move.uci(), level, model, facts.context)
+        row = (k, facts.fen, facts.move.uci(), level, model, text, facts.text(), time.time())
         with self._lock, self._connect() as db:
             db.execute(
-                "INSERT OR REPLACE INTO explanations VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (k, facts.fen, facts.move.uci(), level, model, text, facts.text(), time.time()),
+                "INSERT OR REPLACE INTO explanations"
+                " (key, fen, move, level, model, text, facts, created, outcome)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (*row, outcome),
             )
+
+    def log_grounding(
+        self, facts: MoveFacts, level: str, model: str, outcome: str, issues: list[str]
+    ) -> None:
+        row = (time.time(), facts.fen, facts.move.uci(), level, model, facts.context)
+        with self._lock, self._connect() as db:
+            db.execute(
+                "INSERT INTO grounding_log VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (*row, outcome, json.dumps(issues)),
+            )
+
+    def grounding_stats(self, since: float = 0.0) -> dict[str, int]:
+        """How often each outcome happened (new explanations only, not cache hits)."""
+        counts = dict.fromkeys(OUTCOMES, 0)
+        with self._lock, self._connect() as db:
+            rows = db.execute(
+                "SELECT outcome, COUNT(*) FROM grounding_log WHERE created >= ? GROUP BY outcome",
+                (since,),
+            ).fetchall()
+        for outcome, n in rows:
+            counts[str(outcome)] = int(n)
+        return counts
 
 
 def missing_key_message() -> str:
@@ -134,18 +191,52 @@ class Explainer:
     def cached(self, facts: MoveFacts, level: Level) -> Explanation | None:
         if self.cache is None:
             return None
-        text = self.cache.get(facts.fen, facts.move.uci(), level.key, self.model)
-        return None if text is None else Explanation(text, self.model, True, 0.0)
+        hit = self.cache.get(facts.fen, facts.move.uci(), level.key, self.model, facts.context)
+        if hit is None:
+            return None
+        return Explanation(hit[0], self.model, True, 0.0, outcome=hit[1], calls=0)
 
     def explain(self, facts: MoveFacts, level: Level) -> Explanation:
-        """Cached text, or one API call. Raises :class:`ExplainError` with a readable message."""
+        """Cached text, or 1-2 API calls checked for grounding (see the module docstring).
+        Raises :class:`ExplainError` with a readable message."""
         hit = self.cached(facts, level)
         if hit is not None:
             return hit
         if self._client is None:
             raise ExplainError(self.unavailable_reason)
         t0 = time.perf_counter()
-        response = self._request(facts, level)
+        prompt = user_message(facts, level)
+        text, tokens_in, tokens_out = self._ask(prompt)
+        flagged = [_issue_text(i) for i in check_grounding(text, facts)]
+        outcome, calls = "passed", 1
+        if flagged:
+            log.info("explanation failed the grounding check (%s); asking again", flagged)
+            text2, in2, out2 = self._ask(f"{prompt}\n{retry_message(text, flagged)}")
+            tokens_in, tokens_out, calls = tokens_in + in2, tokens_out + out2, 2
+            flagged2 = [_issue_text(i) for i in check_grounding(text2, facts)]
+            flagged += flagged2
+            if flagged2:
+                outcome, text = "fallback", facts_summary(facts, level)
+                log.info("second explanation failed too (%s); showing the facts", flagged2)
+            else:
+                outcome, text = "regenerated", text2
+        if self.cache is not None:
+            self.cache.put(facts, level.key, self.model, text, outcome)
+            self.cache.log_grounding(facts, level.key, self.model, outcome, flagged)
+        return Explanation(
+            text,
+            self.model,
+            False,
+            time.perf_counter() - t0,
+            tokens_in,
+            tokens_out,
+            outcome,
+            tuple(flagged),
+            calls,
+        )
+
+    def _ask(self, content: str) -> tuple[str, int, int]:
+        response = self._request(content)
         text = " ".join(
             b.text.strip() for b in response.content if b.type == "text" and b.text.strip()
         )
@@ -153,26 +244,17 @@ class Explainer:
             raise ExplainError("Claude declined to explain this position.")
         if not text:
             raise ExplainError(f"Claude returned no text (stop reason: {response.stop_reason}).")
-        if self.cache is not None:
-            self.cache.put(facts, level.key, self.model, text)
         usage = response.usage
-        return Explanation(
-            text,
-            self.model,
-            False,
-            time.perf_counter() - t0,
-            usage.input_tokens,
-            usage.output_tokens,
-        )
+        return text, int(usage.input_tokens), int(usage.output_tokens)
 
-    def _request(self, facts: MoveFacts, level: Level) -> Any:
+    def _request(self, content: str) -> Any:
         assert self._client is not None
         try:
             return self._client.messages.create(
                 model=self.model,
                 max_tokens=MAX_TOKENS,
                 system=SYSTEM,
-                messages=[{"role": "user", "content": user_message(facts, level)}],
+                messages=[{"role": "user", "content": content}],
                 output_config={"effort": self.effort},
             )
         except anthropic.AuthenticationError as err:
@@ -199,6 +281,10 @@ class Explainer:
             raise ExplainError(f"Anthropic API error {err.status_code}; try again later.") from err
         except anthropic.APIConnectionError as err:
             raise ExplainError("Could not reach the Anthropic API (no internet?).") from err
+
+
+def _issue_text(issue: Issue) -> str:
+    return f"{issue.claim!r}: {issue.detail}"
 
 
 def _error_detail(err: anthropic.APIStatusError) -> str:

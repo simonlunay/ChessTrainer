@@ -14,7 +14,14 @@ The skill level picks how many candidates are drawn and whether a simpler "pract
 shown first (``explain/practical.py``). Once a position has been on screen for
 ``explain_delay_s`` and the engine has reached ``explain_min_depth``, the suggested move is
 explained by Claude from facts computed with python-chess (``explain/``), at most once per
-position + move + level (cached on disk).
+position + move + level (cached on disk). Every explanation passes the rule-based grounding check
+(regenerated once, else the facts are shown); explanations can be switched off (no API calls).
+
+Opening trainer mode (``openings/``): a :class:`TrainerSession` follows the game on screen. While
+the game is in the chosen opening's book, the trainer's move is drawn (guided) or checked
+(practice, spaced repetition), Stockfish evaluates just that move (``root_moves``) for the eval
+bar and the explanation facts, and the opponent's replies are named. A move out of book is
+announced, graded with the engine, and the app falls back to normal analysis.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ import html
 import logging
 import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,9 +50,13 @@ from chesstrainer.explain.explainer import (
     Explanation,
     ExplanationCache,
 )
-from chesstrainer.explain.facts import compute_facts, eval_number
+from chesstrainer.explain.facts import compute_facts, eval_number, mover_cp
 from chesstrainer.explain.practical import Suggestion, suggest
 from chesstrainer.levels import Level, get_level
+from chesstrainer.openings.book import Book, default_book
+from chesstrainer.openings.explain import opening_facts
+from chesstrainer.openings.practice import PracticeStore
+from chesstrainer.openings.trainer import TrainerEvent, TrainerSession
 from chesstrainer.overlay.board_overlay import Arrow, BoardOverlay
 from chesstrainer.overlay.capture_exclusion import apply_capture_setting
 from chesstrainer.overlay.gif_recorder import GifRecorder
@@ -90,6 +102,10 @@ class TrainerApp(QObject):
     engine_error = pyqtSignal(str)
     recording_done = pyqtSignal(object, str)  # Path | None, message
     explain_result = pyqtSignal(int, object, object)  # request id, Explanation | None, error
+    book_ready = pyqtSignal(object)  # Book, loaded on a background thread
+
+    #: Depth at which a move that left the book is graded (or when the search ends).
+    GRADE_DEPTH = 14
 
     def __init__(
         self,
@@ -99,6 +115,8 @@ class TrainerApp(QObject):
         show_grid: bool = False,
         calibration: bool = False,
         record_gif_seconds: float | None = None,
+        book: Book | None = None,
+        practice_store: PracticeStore | None = None,
     ) -> None:
         super().__init__()
         self.settings = settings
@@ -141,20 +159,20 @@ class TrainerApp(QObject):
         self.explainer: Explainer | None = None
         self.explain_worker: ExplainWorker | None = None
         self.explain_status = ""
-        if settings.explanations:
-            self.explainer = Explainer(
-                settings.explain_model, settings.explain_effort, cache=ExplanationCache()
-            )
-            if self.explainer.available:
-                self.explain_worker = ExplainWorker(self.explainer, self.explain_result.emit)
-            else:
-                self.explain_status = self.explainer.unavailable_reason
-                print(self.explain_status, file=sys.stderr)
-        else:
-            self.explain_status = "Explanations are turned off (explanations: false in settings)."
+        self._session_t0 = time.time()
+        self._setup_explainer()
         self._explain_timer = QTimer(self)
         self._explain_timer.setSingleShot(True)
         self._explain_timer.timeout.connect(self._maybe_explain)
+
+        # Opening trainer (GUI thread only).
+        self.book: Book | None = book
+        self._book_loading = False
+        self.practice_store = practice_store
+        self.session: TrainerSession | None = None
+        self.trainer_message = ""
+        self._root: tuple[chess.Move, ...] = ()  # moves the current search is restricted to
+        self._grade: dict[str, object] | None = None  # out-of-book move waiting for its grade
 
         self.engine: AnalysisEngine | None = None
         self.engine_status = ""
@@ -184,6 +202,12 @@ class TrainerApp(QObject):
         self.recording_done.connect(self.on_recording_done)
         self.explain_result.connect(self.on_explain_result)
         self.panel.level_changed.connect(self.set_level)
+        self.panel.explanations_toggled.connect(self.set_explanations)
+        self.panel.mode_changed.connect(self.set_mode)
+        self.panel.choose_opening_clicked.connect(self.choose_opening)
+        self.book_ready.connect(self._on_book_ready)
+        self.panel.set_explanations_enabled(settings.explanations)
+        self.panel.set_mode(settings.app_mode)
         self.vision.snapshot.connect(self.on_snapshot)
         self.vision.failed.connect(lambda msg: self.panel.set_status(msg))
         self.panel.flip_clicked.connect(self.flip)
@@ -206,6 +230,8 @@ class TrainerApp(QObject):
             save_settings(self.settings)
             self.level = get_level(self.settings.skill_level)
         self.panel.set_level(self.level.key)
+        if self.settings.app_mode == "trainer":
+            self._start_trainer()
         if self.settings.panel_pos:
             self.panel.move(*self.settings.panel_pos)
         self.panel.show()
@@ -280,13 +306,27 @@ class TrainerApp(QObject):
     def _new_position(self, reading: PositionReading) -> None:
         self.reading_fen = reading.fen
         self.turn_assumed = reading.turn_assumed
-        self._analyse(reading.board.copy(stack=False))
+        board = reading.board.copy(stack=False)
+        if self.session is not None:
+            previous = self.analysis
+            events = self.session.observe(reading.board)
+            if self.session.board is not None:
+                # The trainer knows the game: exact side to move, castling and en passant.
+                board = self.session.board.copy(stack=False)
+                self.turn_assumed = False
+            self._trainer_events(events, previous)
+        self._analyse(board)
 
     def _analyse(self, board: chess.Board) -> None:
         self.board = board
         self.analysis = None
         self.suggestion = None
         self.req_id = None
+        self._root = ()
+        if self.session is not None and self.session.board is not None:
+            expected = self.session.expected_move()
+            if expected is not None and self.session.board.board_fen() == board.board_fen():
+                self._root = (expected,)
         self.panel.clear_analysis()
         self._reset_explanation()
         self.panel.set_turn_assumed(self.turn_assumed)
@@ -297,10 +337,26 @@ class TrainerApp(QObject):
             self.engine.cancel()
             self._status()
             return
-        self.req_id = self.engine.analyze(board)
+        self.req_id = self.engine.analyze(board, self._root)
         self._status()
 
+    def _book_arrow(self) -> chess.Move | None | bool:
+        """Trainer in book: the move to draw (None = draw nothing). False = not in book."""
+        s = self.session
+        if s is None or not s.in_book or self.board is None or s.board is None:
+            return False
+        if s.board.board_fen() != self.board.board_fen():
+            return False
+        return s.arrow_move()
+
     def _refresh_arrows(self) -> None:
+        book = self._book_arrow()
+        if book is not False:
+            if book is None or book is True or self.pending or self.moving:
+                self.overlay.clear()
+            else:
+                self.overlay.set_arrows([Arrow.from_move(book, 1)], self.white_bottom)
+            return
         a = self.analysis
         show = (
             a is not None
@@ -338,6 +394,7 @@ class TrainerApp(QObject):
         self.analysis = analysis
         self._show_analysis()
         self._refresh_arrows()
+        self._maybe_grade()
         self._maybe_explain()
         if analysis.final:
             self._status()
@@ -345,6 +402,13 @@ class TrainerApp(QObject):
     def _show_analysis(self) -> None:
         a, board = self.analysis, self.board
         if a is None or board is None or a.fen != board.fen():
+            return
+        if self._root:
+            # Book move only: the eval bar and the move's line; practice mode hides the move.
+            self.suggestion = Suggestion(a.lines[:1], a.lines[0], False)
+            practice = self.session is not None and self.session.arrow_move() is None
+            shown = () if practice else self.suggestion.lines
+            self.panel.show_analysis(a, self.white_bottom, shown, "")
             return
         self.suggestion = suggest(board, a.lines, self.level)
         note = ""
@@ -369,13 +433,51 @@ class TrainerApp(QObject):
         else:
             self.panel.set_explanation("")
 
+    def _setup_explainer(self) -> None:
+        """Create the explainer when explanations are on (never touches the API when off)."""
+        if not self.settings.explanations:
+            self.explain_status = (
+                f"Explanations are off ({SidePanel.EXPLAIN_SHORTCUT} or the checkbox turns them "
+                "on). No API calls are made."
+            )
+            return
+        if self.explainer is None:
+            self.explainer = Explainer(
+                self.settings.explain_model, self.settings.explain_effort, cache=ExplanationCache()
+            )
+            if self.explainer.available:
+                self.explain_worker = ExplainWorker(self.explainer, self.explain_result.emit)
+            else:
+                print(self.explainer.unavailable_reason, file=sys.stderr)
+        self.explain_status = "" if self.explainer.available else self.explainer.unavailable_reason
+
+    def set_explanations(self, on: bool) -> None:
+        self.settings.explanations = on
+        save_settings(self.settings)
+        self.panel.set_explanations_enabled(on)
+        self._explained = None
+        self.explain_req = None
+        self._setup_explainer()
+        log.info("explanations %s", "on" if on else "off")
+        if self.explain_status:
+            self.panel.set_explanation(self.explain_status, status=True)
+        else:
+            self.panel.set_explanation("")
+        self._maybe_explain()
+
     def _maybe_explain(self) -> None:
         """Explain the suggested move once the position is stable and the analysis settled."""
+        if not self.settings.explanations:
+            return
         if self.explainer is None or not self.explainer.available:
             return
         a, board, sug = self.analysis, self.board, self.suggestion
         if a is None or board is None or sug is None or a.fen != board.fen():
             return
+        if self._root and self.session is not None and self.session.arrow_move() is None:
+            return  # practice: explaining the move would give the answer away
+        if self.session is not None and self.session.in_book and not self._root:
+            return  # opponent's turn in book: their reply is named, not explained
         if self.pending or self.paused:
             return
         waited = time.perf_counter() - self._position_t
@@ -388,13 +490,16 @@ class TrainerApp(QObject):
         if key == self._explained:
             return
         self._explained = key
-        facts = compute_facts(
-            board,
-            sug.line,
-            self.level,
-            engine_best=sug.engine_best if sug.practical else None,
-            alternatives=sug.lines[1:] if self.level.explanation.eval_numbers else (),
-        )
+        if self._root and self.session is not None:
+            facts = opening_facts(self.session, board, sug.line, self.level)
+        else:
+            facts = compute_facts(
+                board,
+                sug.line,
+                self.level,
+                engine_best=sug.engine_best if sug.practical else None,
+                alternatives=sug.lines[1:] if self.level.explanation.eval_numbers else (),
+            )
         self._facts_text = facts.text()
         hit = self.explainer.cached(facts, self.level)
         if hit is not None:
@@ -408,7 +513,7 @@ class TrainerApp(QObject):
     def on_explain_result(
         self, request_id: int, result: Explanation | None, error: str | None
     ) -> None:
-        if request_id != self.explain_req:
+        if request_id != self.explain_req or not self.settings.explanations:
             return  # for a position or level that is no longer shown
         self.explain_req = None
         if result is None:
@@ -419,18 +524,35 @@ class TrainerApp(QObject):
 
     def _show_explanation(self, result: Explanation) -> None:
         source = "cached" if result.cached else f"{result.seconds:.1f}s"
-        log.info("explanation (%s, %s): %s", self.level.key, source, result.text)
+        log.info(
+            "explanation (%s, %s, %s): %s", self.level.key, source, result.outcome, result.text
+        )
+        if not result.cached and self.explainer is not None and self.explainer.cache is not None:
+            stats = self.explainer.cache.grounding_stats(since=self._session_t0)
+            log.info(
+                "grounding check this session: %d passed, %d regenerated, %d shown as facts",
+                stats["passed"],
+                stats["regenerated"],
+                stats["fallback"],
+            )
         if self.board is not None:
             self.explanations.append((self.board.fen(), self.level.key, result))
-        self.panel.set_explanation(
-            result.text, tooltip=f"Facts given to {result.model}:\n{self._facts_text}"
-        )
+        if result.outcome == "fallback":
+            head = "Computed facts (the explanation did not pass the fact check):"
+        elif result.outcome == "regenerated":
+            head = f"Rewritten once by {result.model} to pass the fact check. Facts:"
+        else:
+            head = f"Checked against the facts given to {result.model}:"
+        self.panel.set_explanation(result.text, tooltip=f"{head}\n{self._facts_text}")
 
     def set_level(self, key: str) -> None:
         self.level = get_level(key)
         self.settings.skill_level = self.level.key
         self.settings.level_chosen = True
         save_settings(self.settings)
+        if self.session is not None:
+            self.session.level = self.level  # line depth follows the level
+            self._update_trainer_panel()
         self._explained = None
         self.explain_req = None
         self._show_analysis()
@@ -441,6 +563,183 @@ class TrainerApp(QObject):
         log.error("%s", message)
         self.engine_status = html.escape(message)
         self._status()
+
+    # -- opening trainer ---------------------------------------------------------------------
+
+    def set_mode(self, mode: str) -> None:
+        self.settings.app_mode = "trainer" if mode == "trainer" else "analysis"
+        save_settings(self.settings)
+        self.panel.set_mode(self.settings.app_mode)
+        if self.settings.app_mode == "trainer":
+            self._start_trainer()
+        else:
+            self.session = None
+            self.trainer_message = ""
+            self._grade = None
+            self._reanalyse()
+
+    def _start_trainer(self) -> None:
+        if self.book is None:
+            self.panel.set_trainer("Loading the opening book…")
+            self._load_book()
+            return
+        if not self.settings.trainer_opening:
+            self.panel.set_trainer("No opening chosen yet.", prompt="Choose an opening to train.")
+            QTimer.singleShot(0, self.choose_opening)
+            return
+        self._new_session()
+
+    def _load_book(self) -> None:
+        if self._book_loading:
+            return
+        self._book_loading = True
+        threading.Thread(
+            target=lambda: self.book_ready.emit(default_book()), name="book", daemon=True
+        ).start()
+
+    def _on_book_ready(self, book: Book) -> None:
+        self.book = book
+        self._book_loading = False
+        if self.settings.app_mode == "trainer":
+            self._start_trainer()
+
+    def choose_opening(self) -> None:
+        from chesstrainer.overlay.opening_dialog import OpeningChoice, ask_opening
+
+        if self.book is None:
+            self.book = default_book()
+        s = self.settings
+        current = (
+            OpeningChoice(s.trainer_opening, s.trainer_side, s.trainer_mode)
+            if s.trainer_opening
+            else None
+        )
+        choice = ask_opening(self.book, self.level, current)
+        if choice is None:
+            if not s.trainer_opening:
+                self.panel.set_trainer("No opening chosen.", prompt="Choose an opening to train.")
+            return
+        self.set_opening(choice.name, choice.side, choice.mode)
+
+    def set_opening(self, name: str, side: str, mode: str) -> None:
+        s = self.settings
+        s.trainer_opening = name
+        s.trainer_side = "black" if side == "black" else "white"
+        s.trainer_mode = "practice" if mode == "practice" else "guided"
+        s.app_mode = "trainer"
+        save_settings(s)
+        self.panel.set_mode("trainer")
+        if self.book is None:
+            self.book = default_book()
+        self._new_session()
+
+    def _new_session(self) -> None:
+        assert self.book is not None
+        s = self.settings
+        if s.trainer_mode == "practice" and self.practice_store is None:
+            self.practice_store = PracticeStore()
+        self.session = TrainerSession.create(
+            self.book,
+            s.trainer_opening,
+            chess.WHITE if s.trainer_side == "white" else chess.BLACK,
+            self.level,
+            s.trainer_mode,
+            self.practice_store if s.trainer_mode == "practice" else None,
+        )
+        if self.session.tree.size == 0 and self.session.tree.spec is None:
+            self.trainer_message = f"No book lines found for {s.trainer_opening!r}."
+        else:
+            self.trainer_message = ""
+        self._grade = None
+        log.info(
+            "trainer: %s as %s (%s), %d book lines",
+            s.trainer_opening,
+            s.trainer_side,
+            s.trainer_mode,
+            self.session.tree.size,
+        )
+        self._reanalyse()
+
+    def _reanalyse(self) -> None:
+        """Re-run the current screen position through the trainer (or plain analysis)."""
+        snap = self.last_snapshot
+        self.reading_fen = None
+        if snap is not None and snap.reading is not None:
+            self._new_position(snap.reading)
+        elif self.session is None and self.board is not None:
+            self._analyse(self.board)
+        else:
+            self._update_trainer_panel()
+        self._refresh_arrows()
+
+    def _trainer_events(self, events: list[TrainerEvent], previous: Analysis | None) -> None:
+        if events:
+            self.trainer_message = " ".join(e.message for e in events)
+            for e in events:
+                log.info("trainer: %s: %s", e.kind, e.message)
+        self._grade = None
+        for e in events:
+            if not e.grade or e.move is None or e.mover is None:
+                continue
+            before = None
+            if previous is not None and previous.fen == e.fen_before:
+                before = mover_cp(previous.best, e.mover)
+            board = chess.Board(e.fen_before)
+            self._grade = {
+                "san": board.san(e.move),
+                "mover": e.mover,
+                "before": before,
+                "versus": "the book move" if e.kind == "user_left" else "the best move",
+            }
+            if before is None:
+                self.trainer_message += " (No evaluation of the previous position yet.)"
+        self._update_trainer_panel()
+
+    def _maybe_grade(self) -> None:
+        """Say whether the move that left the book was a mistake, once the engine knows."""
+        g, a, board = self._grade, self.analysis, self.board
+        if g is None or a is None or board is None or a.fen != board.fen():
+            return
+        if not a.final and a.depth < self.GRADE_DEPTH:
+            return
+        self._grade = None
+        before = g["before"]
+        mover = g["mover"]
+        if not isinstance(before, int) or not isinstance(mover, bool):
+            return
+        loss = before - mover_cp(a.best, mover)
+        san, versus = g["san"], g["versus"]
+        if loss >= 50_000:
+            verdict = f"Stockfish: {san} is a blunder: it allows a forced mate."
+        elif before >= 50_000 and loss > 0:
+            verdict = f"Stockfish: {san} misses a forced mate."
+        else:
+            severity = self.level.classify_loss(loss)
+            pawns = f"about {loss / 100:.1f} pawns worse than {versus}"
+            if severity is not None:
+                article = "an" if severity == "inaccuracy" else "a"
+                verdict = f"Stockfish: {san} is {article} {severity} ({pawns})."
+            elif loss < 30:
+                verdict = f"Stockfish: {san} is a reasonable move (about as good as {versus})."
+            else:
+                verdict = f"Stockfish: {san} is {pawns}, but not a real mistake at your level."
+        self.trainer_message += " " + verdict
+        log.info("trainer: grade: %s (loss %d cp)", verdict, loss)
+        self._update_trainer_panel()
+
+    def _update_trainer_panel(self) -> None:
+        s = self.session
+        if s is None:
+            return
+        mode = "practice" if s.mode == "practice" else "guided"
+        title = f"{s.tree.name} - you play {s.side_text} ({mode})"
+        self.panel.set_trainer(
+            title,
+            s.variation_name(),
+            self.trainer_message,
+            s.prompt(),
+            s.practice_summary(),
+        )
 
     # -- status line -------------------------------------------------------------------------
 
@@ -524,6 +823,7 @@ class TrainerApp(QObject):
         self._status()
 
     def _reset_position(self) -> None:
+        self._grade = None
         self.reading_fen = None
         self.board = None
         self.analysis = None

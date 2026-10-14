@@ -7,8 +7,9 @@
 #                        engine's top move (0 = always show the top move first)
 #   practical_min_gain   ...and when its simplicity score is at least this much higher
 #   review               phase 6: a move losing at least this many cp is flagged (null = never)
-#   openings             recommended openings (Lichess chess-openings names), by side
-#   opening_depth_plies  phase 5: how deep trainer lines go
+#   openings             recommended openings (Lichess chess-openings names), by side; shown
+#                        first in the trainer's picker (any opening can be chosen)
+#   opening_depth_plies  how deep opening-trainer lines go (plies from the start)
 #   explanation          what Claude is asked for (see chesstrainer/explain/prompt.py)
 #     sentences          length of the explanation
 #     style              tone and vocabulary
@@ -24,8 +25,8 @@ levels:
     practical_min_gain: 2
     review: {inaccuracy: null, mistake: 250, blunder: 400}
     openings:
-      white: [Italian Game, London System]
-      black: [Italian Game, Queen's Gambit Declined]
+      white: [Italian Game, London System, Scotch Game]
+      black: [Italian Game, Scandinavian Defense, Queen's Gambit Declined]
     opening_depth_plies: 8
     explanation:
       sentences: "1-2"
@@ -46,7 +47,7 @@ levels:
     review: {inaccuracy: null, mistake: 150, blunder: 300}
     openings:
       white: [Italian Game, London System, Queen's Gambit]
-      black: [Scandinavian Defense, Queen's Gambit Declined]
+      black: [Scandinavian Defense, Queen's Gambit Declined, Caro-Kann Defense]
     opening_depth_plies: 10
     explanation:
       sentences: "2"
@@ -107,7 +108,7 @@ levels:
     review: {inaccuracy: 40, mistake: 90, blunder: 200}
     openings:
       white: [Ruy Lopez, Catalan Opening, Queen's Gambit]
-      black: [Sicilian Defense, Nimzo-Indian Defense, Grunfeld Defense]
+      black: [Sicilian Defense, Nimzo-Indian Defense, Grünfeld Defense]
     opening_depth_plies: 24
     explanation:
       sentences: "3"
