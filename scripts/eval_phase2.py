@@ -16,6 +16,7 @@ import csv
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -132,8 +133,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--synthetic", type=int, default=200)
     parser.add_argument("--seed", type=int, default=2)
+    parser.add_argument("--model", type=Path, help=".pt checkpoint or .onnx model (default: dev)")
+    parser.add_argument("--out", type=Path, help="report path (default phase2_report.txt)")
     args = parser.parse_args()
-    rec = PieceRecognizer()
+    rec = PieceRecognizer(args.model)
+    print(f"classifier: {rec.model_path.name} ({rec.backend}, {rec.device})")
     rng = np.random.default_rng(args.seed)
     rows = list(csv.DictReader((REAL_DIR / "labels.csv").open(newline="")))
     images = {
@@ -190,7 +194,7 @@ def main() -> None:
     text = "\n\n".join(report[:1]) + "\n" + "\n\n".join(report[1:])
     print(text)
     EVAL_DIR.mkdir(parents=True, exist_ok=True)
-    out = EVAL_DIR / "phase2_report.txt"
+    out = args.out or EVAL_DIR / "phase2_report.txt"
     out.write_text(text + "\n", encoding="utf-8")
     print(f"\nwrote {out}")
 

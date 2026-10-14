@@ -13,17 +13,17 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from chesstrainer.paths import bundle_dir
 from chesstrainer.settings.config import settings_path
 from chesstrainer.settings.env import load_env
 
 DOWNLOAD_URL = "https://stockfishchess.org/download/"
 _EXE = ".exe" if sys.platform == "win32" else ""
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def engine_dirs() -> list[Path]:
     """Folders searched for a ``stockfish*`` executable."""
-    return [_PROJECT_ROOT / "data" / "engine", settings_path().parent / "engine"]
+    return [bundle_dir() / "engine", settings_path().parent / "engine"]
 
 
 @dataclass

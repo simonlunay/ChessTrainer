@@ -22,6 +22,10 @@ the game is in the chosen opening's book, the trainer's move is drawn (guided) o
 (practice, spaced repetition), Stockfish evaluates just that move (``root_moves``) for the eval
 bar and the explanation facts, and the opponent's replies are named. A move out of book is
 announced, graded with the engine, and the app falls back to normal analysis.
+
+Game review (``review/``, ``overlay/review_window.py``) opens in its own window; live reading is
+paused while it is open. System-wide hotkeys (``overlay/hotkeys.py``) toggle the arrows,
+explanations and pause, flip the board and cycle the modes while another window has focus.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import chess
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
@@ -60,13 +65,18 @@ from chesstrainer.openings.trainer import TrainerEvent, TrainerSession
 from chesstrainer.overlay.board_overlay import Arrow, BoardOverlay
 from chesstrainer.overlay.capture_exclusion import apply_capture_setting
 from chesstrainer.overlay.gif_recorder import GifRecorder
+from chesstrainer.overlay.hotkeys import ACTION_TEXT, GlobalHotkeys, effective_hotkeys
 from chesstrainer.overlay.panel import SidePanel
 from chesstrainer.overlay.screen_map import ScreenMap
 from chesstrainer.overlay.vision_thread import Snapshot, VisionThread
-from chesstrainer.settings.config import Settings, load_settings, save_settings
+from chesstrainer.paths import FROZEN
+from chesstrainer.settings.config import Settings, load_settings, save_settings, settings_path
 from chesstrainer.vision.detect import BoardBox
 from chesstrainer.vision.position import PositionReading
 from chesstrainer.vision.reader import BoardReader
+
+if TYPE_CHECKING:
+    from chesstrainer.overlay.review_window import ReviewWindow
 
 log = logging.getLogger("chesstrainer")
 
@@ -103,6 +113,10 @@ class TrainerApp(QObject):
     recording_done = pyqtSignal(object, str)  # Path | None, message
     explain_result = pyqtSignal(int, object, object)  # request id, Explanation | None, error
     book_ready = pyqtSignal(object)  # Book, loaded on a background thread
+    hotkey_pressed = pyqtSignal(str)  # action, emitted from the hotkey thread
+
+    #: Order of the "switch mode" hotkey.
+    MODES = ("analysis", "trainer", "review")
 
     #: Depth at which a move that left the book is graded (or when the search ends).
     GRADE_DEPTH = 14
@@ -174,9 +188,16 @@ class TrainerApp(QObject):
         self._root: tuple[chess.Move, ...] = ()  # moves the current search is restricted to
         self._grade: dict[str, object] | None = None  # out-of-book move waiting for its grade
 
+        # Review window and hotkeys (GUI thread only).
+        self.review_window: ReviewWindow | None = None
+        self._paused_before_review = False
+        self.overlay_hidden = False
+        self.hotkeys: GlobalHotkeys | None = None
+
         self.engine: AnalysisEngine | None = None
         self.engine_status = ""
         search = find_stockfish(settings.engine_path)
+        self.engine_path = search.path
         if search.path is not None:
             self.engine = AnalysisEngine(
                 search.path,
@@ -206,6 +227,7 @@ class TrainerApp(QObject):
         self.panel.mode_changed.connect(self.set_mode)
         self.panel.choose_opening_clicked.connect(self.choose_opening)
         self.book_ready.connect(self._on_book_ready)
+        self.hotkey_pressed.connect(self.on_hotkey)
         self.panel.set_explanations_enabled(settings.explanations)
         self.panel.set_mode(settings.app_mode)
         self.vision.snapshot.connect(self.on_snapshot)
@@ -237,11 +259,17 @@ class TrainerApp(QObject):
         self.panel.show()
         apply_capture_setting(self.panel, self.hide_from_capture)
         self._status()
+        self._start_hotkeys()
         if self.engine is not None:
             self.engine.start()
         self.vision.start()
 
     def quit(self) -> None:
+        if self.hotkeys is not None:
+            self.hotkeys.stop()
+        if self.review_window is not None:
+            self.review_window.stop()
+            self.review_window.close()
         if self.recorder is not None:
             self.recorder.stop()
         pos = self.panel.pos()
@@ -550,6 +578,8 @@ class TrainerApp(QObject):
         self.settings.skill_level = self.level.key
         self.settings.level_chosen = True
         save_settings(self.settings)
+        if self.review_window is not None:
+            self.review_window.set_level(self.level)
         if self.session is not None:
             self.session.level = self.level  # line depth follows the level
             self._update_trainer_panel()
@@ -564,9 +594,102 @@ class TrainerApp(QObject):
         self.engine_status = html.escape(message)
         self._status()
 
+    # -- game review -------------------------------------------------------------------------
+
+    def open_review(self) -> None:
+        from chesstrainer.overlay.review_window import ReviewWindow
+
+        if self.review_window is None:
+            self.review_window = ReviewWindow(
+                self.settings,
+                self.level,
+                self.engine_path,
+                self.review_explainer,
+                explanations_on=lambda: self.settings.explanations,
+            )
+            self.review_window.closed.connect(self._on_review_closed)
+        if not self.review_window.isVisible():
+            # Live reading pauses while reviewing (no screen capture, no live Stockfish).
+            self._paused_before_review = self.paused
+            if not self.paused:
+                self.panel.pause.setChecked(True)
+        self.panel.set_mode("review")
+        self.review_window.show()
+        self.review_window.raise_()
+        self.review_window.activateWindow()
+
+    def _on_review_closed(self) -> None:
+        self.panel.set_mode(self.settings.app_mode)
+        if not self._paused_before_review:
+            self.panel.pause.setChecked(False)
+
+    def review_explainer(self) -> tuple[Explainer | None, str]:
+        """The explainer for a review, or None with the reason (off = no API calls)."""
+        if not self.settings.explanations:
+            return None, (
+                "Explanations are off, so mistakes are not explained (no API calls); "
+                f"turn them on with {SidePanel.EXPLAIN_SHORTCUT} or the panel checkbox."
+            )
+        self._setup_explainer()
+        if self.explainer is None or not self.explainer.available:
+            return None, self.explain_status
+        return self.explainer, ""
+
+    # -- hotkeys -----------------------------------------------------------------------------
+
+    def _start_hotkeys(self) -> None:
+        if not self.settings.global_hotkeys:
+            return
+        bindings = effective_hotkeys(self.settings.hotkeys)
+        self.hotkeys = GlobalHotkeys(bindings, self.hotkey_pressed.emit)
+        self.hotkeys.start()
+        ok = self.hotkeys.registered
+        text = " · ".join(f"{combo} {ACTION_TEXT[a].split(' (')[0]}" for a, combo in ok.items())
+        tip = "System-wide hotkeys (work in any window):\n" + "\n".join(
+            f"{combo}: {ACTION_TEXT[a]}" for a, combo in ok.items()
+        )
+        if self.hotkeys.failed:
+            tip += "\n\nNot available:\n" + "\n".join(
+                f"{ACTION_TEXT.get(a, a)}: {why}" for a, why in self.hotkeys.failed.items()
+            )
+            text += " (some hotkeys are taken; hover for details)"
+        self.panel.set_hotkeys(f"Hotkeys: {text}" if ok else text, tip)
+
+    def _hotkey_for(self, action: str) -> str:
+        return self.hotkeys.registered.get(action, "") if self.hotkeys is not None else ""
+
+    def on_hotkey(self, action: str) -> None:
+        log.info("hotkey: %s", action)
+        if action == "toggle_overlay":
+            self.set_overlay_hidden(not self.overlay_hidden)
+        elif action == "toggle_explanations":
+            self.set_explanations(not self.settings.explanations)
+        elif action == "pause":
+            self.panel.pause.toggle()
+        elif action == "flip":
+            self.flip()
+        elif action == "switch_mode":
+            reviewing = self.review_window is not None and self.review_window.isVisible()
+            current = "review" if reviewing else self.settings.app_mode
+            self.set_mode(self.MODES[(self.MODES.index(current) + 1) % len(self.MODES)])
+
+    def set_overlay_hidden(self, hidden: bool) -> None:
+        """Hide the arrows without stopping the analysis (the panel keeps updating)."""
+        self.overlay_hidden = hidden
+        self.panel.set_overlay_hidden(hidden, self._hotkey_for("toggle_overlay"))
+        if hidden:
+            self._set_overlay_visible(False)
+        elif self.box is not None and not self.paused:
+            self._set_overlay_visible(True)
+
     # -- opening trainer ---------------------------------------------------------------------
 
     def set_mode(self, mode: str) -> None:
+        if mode == "review":
+            self.open_review()
+            return
+        if self.review_window is not None and self.review_window.isVisible():
+            self.review_window.close()  # back to live reading
         self.settings.app_mode = "trainer" if mode == "trainer" else "analysis"
         save_settings(self.settings)
         self.panel.set_mode(self.settings.app_mode)
@@ -904,6 +1027,7 @@ class TrainerApp(QObject):
     # -- windows -----------------------------------------------------------------------------
 
     def _set_overlay_visible(self, visible: bool) -> None:
+        visible = visible and not self.overlay_hidden
         if visible and not self.overlay.isVisible():
             self.overlay.show()
             recording = self.recorder is not None
@@ -955,11 +1079,29 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--seconds", type=float, help="quit after this many seconds")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument(
+        "--self-check",
+        type=Path,
+        metavar="REPORT",
+        help="headless installation check (no window, no capture); writes a JSON report",
+    )
     args = parser.parse_args(argv)
+    if args.self_check:
+        from chesstrainer.selfcheck import run
+
+        sys.exit(run(args.self_check))
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if FROZEN or sys.stderr is None:
+        # Packaged app without a console: log to a file next to the settings.
+        log_file = settings_path().parent / "chesstrainer.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers = [logging.FileHandler(log_file, mode="w", encoding="utf-8")]
+        sys.excepthook = lambda *exc: log.critical("unhandled error", exc_info=exc)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(message)s",
         datefmt="%H:%M:%S",
+        handlers=handlers,
     )
 
     settings = load_settings()

@@ -21,6 +21,7 @@ from numpy.typing import NDArray
 from torch.utils.data import IterableDataset, get_worker_info
 
 from chesstrainer.vision.assets import (
+    FREE_PIECE_SETS,
     HELD_OUT_PIECE_SETS,
     HELD_OUT_TEXTURES,
     available_piece_sets,
@@ -39,9 +40,14 @@ DATA_DIR = Path(__file__).resolve().parents[3] / "data"
 EVAL_DIR = DATA_DIR / "eval"
 
 
-def train_split() -> StyleSplit:
+def train_split(free_only: bool = False) -> StyleSplit:
+    """Training styles. ``free_only`` drops the CC BY-NC-SA piece sets (the shipped model)."""
     return StyleSplit(
-        piece_sets=[s for s in available_piece_sets() if s not in HELD_OUT_PIECE_SETS],
+        piece_sets=[
+            s
+            for s in available_piece_sets()
+            if s not in HELD_OUT_PIECE_SETS and (not free_only or s in FREE_PIECE_SETS)
+        ],
         textures=[t for t in available_textures() if t not in HELD_OUT_TEXTURES],
         palettes=[p for p in PALETTES if p not in HELD_OUT_PALETTES],
         random_colors=True,

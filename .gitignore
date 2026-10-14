@@ -17,3 +17,9 @@ data/engine/
 data/demo/
 build/
 dist/
+
+# Phase 6 build logs
+data/train_log*.txt
+data/build_log.txt
+dist/
+build/

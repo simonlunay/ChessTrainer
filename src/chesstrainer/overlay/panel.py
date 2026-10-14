@@ -133,6 +133,7 @@ class SidePanel(QWidget):
         self.mode = QComboBox()
         self.mode.addItem("Best-move analysis", "analysis")
         self.mode.addItem("Opening trainer", "trainer")
+        self.mode.addItem("Game review", "review")
         self.mode.currentIndexChanged.connect(
             lambda i: self.mode_changed.emit(str(self.mode.itemData(i)))
         )
@@ -193,6 +194,11 @@ class SidePanel(QWidget):
         right.addLayout(mode_row)
         right.addWidget(self.trainer_box)
         right.addWidget(self.status)
+        self.hidden_note = QLabel()
+        self.hidden_note.setWordWrap(True)
+        self.hidden_note.setStyleSheet("color: #8a6d00")
+        self.hidden_note.hide()
+        right.addWidget(self.hidden_note)
         right.addWidget(self.turn_button)
         right.addWidget(_rule())
         right.addLayout(cand)
@@ -211,6 +217,11 @@ class SidePanel(QWidget):
         buttons.addWidget(self.pause, 1, 0)
         buttons.addWidget(self.record, 1, 1)
         right.addLayout(buttons)
+        self.hotkeys_label = QLabel()
+        self.hotkeys_label.setWordWrap(True)
+        self.hotkeys_label.setStyleSheet("color: gray; font-size: 8pt")
+        self.hotkeys_label.hide()
+        right.addWidget(self.hotkeys_label)
 
         root = QHBoxLayout(self)
         root.addWidget(self.eval_bar)
@@ -300,6 +311,16 @@ class SidePanel(QWidget):
         ):
             label.setText(text)
             label.setVisible(bool(text))
+
+    def set_overlay_hidden(self, hidden: bool, shortcut: str = "") -> None:
+        key = f" ({shortcut} shows them again)" if shortcut else ""
+        self.hidden_note.setText(f"Arrows hidden{key}." if hidden else "")
+        self.hidden_note.setVisible(hidden)
+
+    def set_hotkeys(self, text: str, tooltip: str = "") -> None:
+        self.hotkeys_label.setText(text)
+        self.hotkeys_label.setToolTip(tooltip)
+        self.hotkeys_label.setVisible(bool(text))
 
     def set_recording(self, on: bool, text: str | None = None) -> None:
         self.record.blockSignals(True)

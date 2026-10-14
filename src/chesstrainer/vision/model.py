@@ -14,6 +14,8 @@ from chesstrainer.vision.labels import CLASS_NAMES, NUM_CLASSES
 
 MODEL_DIR = Path(__file__).resolve().parents[3] / "data" / "models"
 DEFAULT_CHECKPOINT = MODEL_DIR / "square_classifier.pt"
+#: Trained without the CC BY-NC-SA piece sets; this is the one the packaged app ships.
+FREE_CHECKPOINT = MODEL_DIR / "square_classifier_free.pt"
 
 
 def _block(c_in: int, c_out: int) -> nn.Sequential:

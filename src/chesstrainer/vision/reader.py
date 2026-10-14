@@ -46,7 +46,9 @@ class BoardReader:
         locked = BoardBox(*settings.locked_region) if settings.locked_region else None
         self.boards = BoardTracker(locked=locked)
         self.recognizer = recognizer or PieceRecognizer(
-            device=settings.device, keep_warm=settings.gpu_keep_warm
+            device=settings.device,
+            keep_warm=settings.gpu_keep_warm,
+            backend=settings.classifier_backend,  # type: ignore[arg-type]
         )
         self.orientation = OrientationTracker(settings.orientation)
         self.positions = PositionTracker(stable_frames=stable_frames)

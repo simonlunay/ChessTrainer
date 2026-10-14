@@ -1,0 +1,56 @@
+== val: 300 boards ==
+per-square accuracy: 99.0260%
+full-board accuracy: 78.00%
+ class    prec  recall      n
+ empty  0.9999  1.0000  14872
+     P  0.9764  0.9764    975
+     N  0.9605  0.9798    248
+     B  0.9628  0.9246    252
+     R  0.9632  0.9850    266
+     Q  0.9740  0.8242     91
+     K  0.8865  0.9633    300
+     p  0.9751  0.9742   1006
+     n  0.9798  0.9603    252
+     b  0.9664  0.9020    255
+     r  0.9895  0.9658    292
+     q  0.8889  0.7912     91
+     k  0.8620  0.9367    300
+top confusions (true->pred): p->P x22, P->p x22, q->k x17, b->k x14, B->K x14, Q->K x13, n->N x10, k->K x10
+
+== heldout: 300 boards ==
+per-square accuracy: 99.5938%
+full-board accuracy: 82.00%
+ class    prec  recall      n
+ empty  1.0000  1.0000  14950
+     P  1.0000  1.0000    962
+     N  1.0000  1.0000    259
+     B  1.0000  1.0000    237
+     R  0.9565  1.0000    286
+     Q  1.0000  0.6700    100
+     K  0.8982  1.0000    300
+     p  0.9990  0.9990    967
+     n  1.0000  1.0000    248
+     b  0.9957  0.9957    233
+     r  0.9961  0.9485    272
+     q  1.0000  0.6744     86
+     k  0.9144  0.9967    300
+top confusions (true->pred): Q->K x33, q->k x28, r->R x13, r->p x1, p->b x1, k->K x1, b->r x1
+
+== real: 71 boards ==
+per-square accuracy: 97.7773%
+full-board accuracy: 83.10%
+ class    prec  recall      n
+ empty  0.9903  0.9932   3511
+     P  0.9614  0.9069    247
+     N  0.9434  0.8621     58
+     B  0.9545  0.8936     47
+     R  0.9254  0.8986     69
+     Q  0.9565  0.9167     24
+     K  0.9420  0.9155     71
+     p  0.9228  0.9458    240
+     n  0.9403  0.9844     64
+     b  0.9333  0.9655     58
+     r  0.9143  0.9846     65
+     q  0.9375  0.7895     19
+     k  0.8800  0.9296     71
+top confusions (true->pred): P->empty x12, P->p x10, p->empty x7, empty->p x7, empty->P x5, R->r x5, N->n x4, q->k x3

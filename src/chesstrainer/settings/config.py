@@ -42,6 +42,9 @@ class Settings:
     #: Classify every frame on CUDA so the GPU stays clocked up: ~80 ms faster reaction to a
     #: move on a laptop, at the cost of ~6 ms of GPU work per frame. Off = classify on change only.
     gpu_keep_warm: bool = True
+    #: Classifier backend: "auto" (PyTorch when installed, else the ONNX model), "torch", "onnx".
+    #: The packaged app has no PyTorch and always uses ONNX (OpenCV DNN, CPU).
+    classifier_backend: str = "auto"
     #: Stockfish executable; None = search STOCKFISH_PATH, PATH, data/engine and the app folder.
     engine_path: str | None = None
     engine_threads: int = 4
@@ -76,6 +79,18 @@ class Settings:
     trainer_opening: str = ""
     trainer_side: Side = "white"
     trainer_mode: TrainerMode = "guided"
+    #: System-wide hotkeys, action -> combination (e.g. "Ctrl+Alt+O"; "" disables one). Missing
+    #: actions use the defaults in ``overlay/hotkeys.py``. ``global_hotkeys`` False = none.
+    global_hotkeys: bool = True
+    hotkeys: dict[str, str] = field(default_factory=dict)
+    #: Game review: usernames (remembered), how many recent games to list, engine depth and time
+    #: cap per position, and how many of the biggest mistakes per game are explained.
+    lichess_username: str = ""
+    chesscom_username: str = ""
+    review_fetch_count: int = 10
+    review_depth: int = 14
+    review_seconds: float = 0.5
+    review_explain_max: int = 3
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -102,6 +117,8 @@ def load_settings(path: Path | None = None) -> Settings:
     settings = Settings(**{k: v for k, v in raw.items() if k in known})
     if settings.orientation not in ("auto", "white", "black"):
         settings.orientation = "auto"
+    if settings.classifier_backend not in ("auto", "torch", "onnx"):
+        settings.classifier_backend = "auto"
     if settings.app_mode not in ("analysis", "trainer"):
         settings.app_mode = "analysis"
     if settings.trainer_side not in ("white", "black"):

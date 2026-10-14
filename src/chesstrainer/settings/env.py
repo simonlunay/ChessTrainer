@@ -1,7 +1,8 @@
 """Secrets and paths from ``.env`` files (never hardcoded, never committed).
 
 Searched in order, without overriding variables already set in the environment: the project's
-``.env`` (development), then ``.env`` next to the user settings (``%APPDATA%\ChessTrainer``).
+``.env`` (development only; the packaged app never looks there), then ``.env`` next to the user
+settings (``%APPDATA%\ChessTrainer``).
 """
 
 from __future__ import annotations
@@ -9,13 +10,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from chesstrainer.paths import FROZEN, PROJECT_ROOT
 from chesstrainer.settings.config import settings_path
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def env_files() -> list[Path]:
-    return [PROJECT_ROOT / ".env", settings_path().parent / ".env"]
+    user = settings_path().parent / ".env"
+    return [user] if FROZEN else [PROJECT_ROOT / ".env", user]
 
 
 def load_env() -> None:

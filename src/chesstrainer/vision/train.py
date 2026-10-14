@@ -4,7 +4,9 @@
 
 Writes ``data/models/square_classifier.pt`` (best validation checkpoint) and
 ``data/models/eval_report.txt`` with metrics on the validation, held-out-style and
-real-screenshot sets.
+real-screenshot sets. ``--free-only`` trains without the CC BY-NC-SA piece sets and writes
+``square_classifier_free.pt`` / ``eval_report_free.txt`` (the model the packaged app ships).
+The evaluation sets stay the same in both cases, so the numbers are comparable.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -23,6 +26,7 @@ from chesstrainer.vision.dataset import SyntheticSquares, load_or_build_eval, tr
 from chesstrainer.vision.evaluate import EvalReport, evaluate_boards, load_real_screenshots
 from chesstrainer.vision.model import (
     DEFAULT_CHECKPOINT,
+    FREE_CHECKPOINT,
     CheckpointMeta,
     SquareClassifier,
     load_checkpoint,
@@ -51,13 +55,16 @@ def train(
     eval_every: int,
     seed: int,
     width: int,
+    free_only: bool = False,
 ) -> list[EvalReport]:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(seed)
-    split = train_split()
+    split = train_split(free_only)
+    out = FREE_CHECKPOINT if free_only else DEFAULT_CHECKPOINT
     log.info(
-        "training on %d piece sets, %d textures, device=%s",
+        "training on %d piece sets (%s), %d textures, device=%s",
         len(split.piece_sets),
+        ", ".join(split.piece_sets),
         len(split.textures),
         device,
     )
@@ -111,23 +118,30 @@ def train(
             )
             if report.square_accuracy >= best:
                 best = report.square_accuracy
-                save_checkpoint(model, DEFAULT_CHECKPOINT, CheckpointMeta(width=width))
+                save_checkpoint(model, out, CheckpointMeta(width=width))
             model.train()
         if step >= steps:
             break
 
-    best_model, meta = load_checkpoint(DEFAULT_CHECKPOINT, device)
+    best_model, meta = load_checkpoint(out, device)
     reports = run_evals(best_model, device)
     meta.metrics = {f"{r.name}_square_accuracy": r.square_accuracy for r in reports} | {
         f"{r.name}_board_accuracy": r.board_accuracy for r in reports
     }
-    save_checkpoint(best_model, DEFAULT_CHECKPOINT, meta)
-    text = "\n\n".join(r.format() for r in reports)
-    (DEFAULT_CHECKPOINT.parent / "eval_report.txt").write_text(text + "\n", encoding="utf-8")
-    (DEFAULT_CHECKPOINT.parent / "metrics.json").write_text(
-        json.dumps(meta.metrics, indent=2), encoding="utf-8"
-    )
+    save_checkpoint(best_model, out, meta)
+    write_reports(out, reports, meta.metrics)
     return reports
+
+
+def write_reports(
+    checkpoint: Path, reports: list[EvalReport], metrics: dict[str, float] | None
+) -> None:
+    suffix = "_free" if checkpoint == FREE_CHECKPOINT else ""
+    text = "\n\n".join(r.format() for r in reports)
+    (checkpoint.parent / f"eval_report{suffix}.txt").write_text(text + "\n", encoding="utf-8")
+    (checkpoint.parent / f"metrics{suffix}.json").write_text(
+        json.dumps(metrics, indent=2), encoding="utf-8"
+    )
 
 
 def main() -> None:
@@ -140,13 +154,20 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--width", type=int, default=32)
     parser.add_argument("--eval-only", action="store_true", help="evaluate the saved checkpoint")
+    parser.add_argument(
+        "--free-only",
+        action="store_true",
+        help="train/evaluate without the CC BY-NC-SA piece sets (square_classifier_free.pt)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
     if args.eval_only:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model, _ = load_checkpoint(DEFAULT_CHECKPOINT, device)
+        checkpoint = FREE_CHECKPOINT if args.free_only else DEFAULT_CHECKPOINT
+        model, meta = load_checkpoint(checkpoint, device)
         reports = run_evals(model, device)
+        write_reports(checkpoint, reports, meta.metrics)
     else:
         reports = train(
             args.steps,
@@ -156,6 +177,7 @@ def main() -> None:
             args.eval_every,
             args.seed,
             args.width,
+            args.free_only,
         )
     for r in reports:
         print(r.format(), end="\n\n")

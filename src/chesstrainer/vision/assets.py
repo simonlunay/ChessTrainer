@@ -34,6 +34,10 @@ class PieceSet:
     name: str
     license: str
 
+    @property
+    def non_commercial(self) -> bool:
+        return "-NC" in self.license
+
 
 # Free-licensed, realistic-looking sets. Abstract or novelty sets (letter, shapes, mono,
 # disguised, kiwen-suwi, anarcandy, horsey, firi) are excluded: no real site uses them.
@@ -64,6 +68,10 @@ PIECE_SETS: tuple[PieceSet, ...] = (
     PieceSet("monarchy", "CC-BY-NC-SA-4.0"),
     PieceSet("minimal-warmth", "CC-BY-NC-SA-4.0"),
 )
+
+#: Sets whose licence allows redistribution in the packaged app (the shipped classifier is
+#: trained on these only, see ``train --free-only``).
+FREE_PIECE_SETS: frozenset[str] = frozenset(s.name for s in PIECE_SETS if not s.non_commercial)
 
 #: Full-board texture images from lila public/images/board (AGPLv3+).
 BOARD_TEXTURES: tuple[str, ...] = (

@@ -28,11 +28,12 @@ settings); assets/eval data in `data/` (mostly git-ignored).
 (or `.venv/Scripts/python ...` directly).
 ```
 python -m uv sync                                   # CUDA torch from the cu126 index
-python -m uv run pytest                             # 124 tests (engine test skips w/o Stockfish)
+python -m uv run pytest                             # 151 tests (engine tests skip w/o Stockfish)
 .venv/Scripts/ruff format src tests scripts && .venv/Scripts/ruff check src tests scripts
 .venv/Scripts/mypy src
 python -m uv run python scripts/download_assets.py  # Lichess piece sets + board textures
-python -m uv run python -m chesstrainer.vision.train [--eval-only]   # ~13 min on GPU
+python -m uv run python -m chesstrainer.vision.train [--eval-only] [--free-only] [--steps N]
+python -m uv run python -m chesstrainer.vision.export_onnx   # free .pt -> .onnx + .json, checks vs torch
 python -m uv run python scripts/fetch_real_eval.py  # lichess/chess.com server renders -> data/real
 python -m uv run python -m chesstrainer.vision.live [--select|--clear-region|--orientation X|--image F]
 python -m uv run python scripts/eval_phase2.py      # -> data/eval/phase2_report.txt
@@ -42,7 +43,14 @@ python -m uv run python scripts/overlay_selftest.py # phase 3: latency + alignme
 python -m uv run python scripts/browser_check.py    # phase 3 on lichess in a throwaway Chrome window
 python -m uv run python scripts/eval_phase4.py [--effort low|medium]  # -> data/eval/phase4_report.txt
 python -m uv run python scripts/eval_phase5.py [--no-explain] [--budget 1.0]  # -> data/eval/phase5_report.txt
+python -m uv run python scripts/eval_phase6.py [--no-explain] [--offline]  # review on fetched games
+python -m uv run python scripts/build_exe.py [--skip-build]  # PyInstaller -> dist/ChessTrainer + audit
+dist/ChessTrainer/ChessTrainer.exe --self-check report.json  # headless check (no window/capture)
 ```
+`eval_phase6.py` fetches public games (Lichess maia1/maia5, Chess.com hikaru) + 3 sample PGNs,
+real Stockfish, explains the 3 biggest mistakes per game with Haiku (~$0.005/run).
+`build_exe.py` takes ~90 s and never needs the screen (the self-check is headless, with an empty
+CHESSTRAINER_HOME and ANTHROPIC_API_KEY removed from its env).
 `eval_phase4.py` defaults to an Opus judge (~$1.80/run): under the budget rule never run it with
 Opus again; use `--judge-model claude-haiku-5-5` or rely on the rule checker.
 `eval_phase5.py` drives the real app offscreen (no screen use) with real Stockfish through 15
@@ -81,9 +89,12 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
    explanation with the opening's ideas, variation named on replies), deviation handling (flag,
    say if it's a mistake, show engine reply, switch to normal analysis); practice mode (no
    arrows, check moves, spaced repetition in SQLite). Works with explanations off.
-6. Review mode (paste PGN, step through, best moves + explanations for the user's mistakes,
-   filtered by level thresholds), global hotkeys (toggle overlay, switch modes, flip
-   orientation), PyInstaller packaging.
+6. **DONE** Review mode: paste PGN or load recent Lichess / Chess.com games by username (public
+   APIs), engine pass, the user's mistakes marked by the level's `review` thresholds, mistake
+   types + "what to work on" summary, grounded explanations of the biggest mistakes (respecting
+   the toggle). System-wide hotkeys (arrows, explanations, pause, flip, mode). PyInstaller
+   onedir build with the ONNX free-licence classifier, bundled Stockfish, build audit. README
+   rewritten for the public repo.
 
 ## Key design decisions
 - **Classifier** (`vision/model.py`, `train.py`): 13 classes (empty, PNBRQK, pnbrqk; fixed index
@@ -203,6 +214,49 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   square, concepts (tag map), numbers and verdict words not in the facts; the eval pairs it with
   an Opus 5.5 judge that lists claims and marks each supported/unsupported (JSON schema output).
 
+- **Review** (`review/`, Qt-free; `overlay/review_window.py`): `games.py` parses PGN (variants
+  skipped) and fetches Lichess `api/games/user/{name}` (PGN) / Chess.com monthly archives (JSON,
+  newest first, <= 6 months); usernames validated by regex; readable `FetchError`s. Player's
+  side = username match (pasted PGN: auto/White/Black combo; unknown -> White, marked
+  "assumed"). `analysis.py`: separate `StockfishEvaluator` (depth `review_depth` 14, cap
+  `review_seconds` 0.5) searches every position once; loss = mover's eval of the best move minus
+  the eval after the played move, both clamped to +-1000 cp; played == best -> 0;
+  `Level.classify_loss` grades the player's moves only. `mistakes.py`: first match of allowed
+  mate, missed mate, opponent's best reply wins material by SEE (moved piece / other piece =
+  hung_piece; piece already attacked before the move = ignored_threat), missed winning capture,
+  reply is a fork/skewer/discovered attack, reply line wins material (lost_material), reply
+  pins, best move fork/skewer/discovered, best line wins material (missed_win), best pins, else
+  positional; lines judged at the Expert horizon (8 plies) for every level. Labels + tips in
+  `KINDS`. `report.py`: summary (counts by severity and type, average loss, top 4 types with
+  tips) and `review_facts` = facts of the best move + "In the game you played X (severity, N
+  pawns worse)" + mistake type + facts about the played move prefixed "About X (the move
+  played)"; context `review:<uci>` (own cache entries); extra instructions. `runner.py`:
+  background thread, all games first, then up to `review_explain_max` (3) biggest per game;
+  checks `explanations_on()` before each call; stops at the first API error.
+- **Review window**: Paste / Lichess / Chess.com tabs (usernames + count saved), multi-select
+  list, progress + Stop; board (`board_view.py`: Unicode glyphs drawn as a light backing + solid
+  or outline glyph, no image assets), red arrow = played, green = best; move list with ?!/?/??
+  colours; Left/Right, N = next mistake; detail pane (severity, loss, best move, type + detail,
+  explanation; facts in the tooltip); summary pane. Opening it (mode combo "Game review" or the
+  mode hotkey) pauses live reading; closing restores the previous pause state and mode. Review
+  is not persisted as `app_mode`.
+- **Hotkeys** (`overlay/hotkeys.py`): `RegisterHotKey` on a dedicated thread with its own message
+  loop (MOD_NOREPEAT), WM_HOTKEY -> Qt signal. Defaults Ctrl+Alt+O (arrows), E (explanations),
+  P (pause), F (flip), M (mode: analysis -> trainer -> review). `Settings.hotkeys` overrides
+  ("" disables one), `global_hotkeys` False = none. Taken combos are skipped and listed in the
+  panel tooltip. Hiding arrows keeps the analysis running (`overlay_hidden`).
+- **Packaging**: PyTorch with CUDA is 4 GB, so (user's decision) the shipped app runs the
+  classifier as ONNX via `cv2.dnn` (`vision/onnx_backend.py`; `PieceRecognizer(backend="auto")`
+  = torch when installed and the .pt exists, else ONNX; `Settings.classifier_backend`). Shipped
+  model = `square_classifier_free.pt` (`train --free-only --steps 24000`, no CC BY-NC-SA sets),
+  exported to `square_classifier_free.onnx` + `.json` sidecar (class order, source). `paths.py`:
+  `FROZEN`, `bundle_dir()` (`_MEIPASS` when frozen, else `data/`); the frozen app reads only
+  `%APPDATA%\ChessTrainer\.env`; engine search uses `bundle_dir()/engine`. Spec
+  `packaging/chesstrainer.spec`: onedir, windowed, icon, excludes torch and training modules,
+  bundles YAML/TSV data, the ONNX model, the Stockfish folder (with source + licence) and
+  `THIRD_PARTY_LICENSES.txt`. Frozen app logs to `%APPDATA%\ChessTrainer\chesstrainer.log`.
+  `--self-check` (`selfcheck.py`) checks classifier/engine/data/key presence headless.
+
 ## Results so far
 - Phase 1 classifier: per-square 99.61% val, 99.88% held-out styles, 98.1% real renders.
 - Phase 2 (`data/eval/phase2_report.txt`): user's 11 screenshots 11/11 exact FEN with auto
@@ -240,13 +294,27 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   (earlier run: 72/1/0); latency median 2.4 s, max 4.5 s; ~$0.02 per run.
   Phase 5 API spend in total: ~$0.04 (two explanation runs; all tests use fake clients).
 
+- Phase 6 (`data/eval/phase6_report.txt`, `phase6_build.txt`, `phase2_report_free_onnx_24k.txt`):
+  free-licence model per-square val 99.03% / held-out 99.59% / real 97.78% (dev model 99.61 /
+  99.88 / 97.76; val and held-out contain NC styles the free model never saw). Phase-2 eval with
+  it through ONNX: user screenshots 11/11, lichess 20/20, chess.com 25/40 auto / 31/40 with
+  orientation given (dev model 27 / 33), synthetic screens 163/200 auto (dev 171). ONNX vs
+  PyTorch: 0 of 42,944 eval predictions differ (max prob diff 4e-6). A 12k-step free model was
+  similar (backup `square_classifier_free_12k.pt`). Review eval: 10 games (7 fetched live from
+  Lichess/Chess.com, 3 sample PGNs), ~0.14 s per position; explanations 15 new over two runs: 13
+  passed first time, 2 regenerated, 0 fallback; latency median ~4.5 s. Build: 379 MB (Stockfish
+  105, cv2 112, PyQt6 73), ~90 s, audit passed (3,613 archived modules + zips scanned for keys),
+  frozen self-check passed (ONNX ~44 ms first inference, bundled SF19, no key without the user's
+  .env). Phase 6 API spend: ~$0.01 (two eval_phase6 runs; tests use fake clients).
+
 ## Known limitations
 - Unusual chess.com piece sets ("8-bit", "light") misclassify; fix = more piece styles in training.
 - Orientation is ambiguous on boards without coordinates in random/endgame positions (real games
   lock it in from the opening; manual flip/`--orientation` available).
 - Side to move for positions seen without history may be assumed (flagged `turn_assumed`).
 - Very low-contrast pastel themes can still be missed in cluttered screens (1/40); drag-select works.
-- Some piece sets are CC BY-NC-SA → trained weights are non-commercial unless those are dropped.
+- The dev model is trained with CC BY-NC-SA piece sets (non-commercial weights); the shipped
+  model is not (slightly weaker on chess.com renders, see the Phase 6 results).
 - Phase 3 browser check: one resize measurement found no calibration dots and one took 3.8 s
   to re-find the board, both while other windows were covering/uncovering the test window;
   unconfirmed whether that is an app problem. Move -> arrows from a key press exceeds 500 ms on
@@ -271,3 +339,13 @@ User settings: `%APPDATA%\ChessTrainer\settings.json` (`CHESSTRAINER_HOME` overr
   give the answer away). Ctrl+E only works while the panel has focus.
 - Positional facts are basic (no outposts, king safety beyond castling, space or plans); the
   model is told not to invent them, so quiet moves get plain "what it does + evaluation" texts.
+- Phase 6: the review window, hotkeys and packaged exe were tested offscreen / headless only
+  (window rendered offscreen to an image; hotkeys registered with an unused combo plus a posted
+  WM_HOTKEY, no key presses); the exe's GUI has not been launched on the real screen (rule: ask
+  first). Mistake types are heuristics over 8-ply lines: a loss that only shows later (trapped
+  piece, slow attack) gets "missed ways to win material" or "positional" even when a human would
+  name it differently. Explanations start only after all selected games are analysed. Lichess
+  returns every speed (bullet included); the Chess.com fetch looks back at most 6 monthly
+  archives. Builds are GPLv3-bound (PyQt6, python-chess, Stockfish); no LICENSE file has been
+  chosen for the repo. `docs/demo.gif` is a placeholder in the README (record it with the Record
+  button). Global hotkeys are Windows-only.
